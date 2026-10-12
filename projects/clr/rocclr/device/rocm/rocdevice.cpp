@@ -1825,6 +1825,14 @@ bool Device::populateOCLDeviceConstants() {
     }
   }
   HIP_MEM_POOL_USE_VM &= info_.virtualMemoryManagement_;
+  // The VM heap can lose live CSR analysis buffers across the first kernel
+  // launches on gfx1013. Keep async pooling and VMM available, but default to
+  // the established pool backend until VM-heap correctness is qualified.
+  // An explicit setting retains the experimental opt-in for hardware tests.
+  if (flagIsDefault(DEBUG_HIP_MEM_POOL_VMHEAP) && isa().versionMajor() == 10 &&
+      isa().versionMinor() == 1 && isa().versionStepping() == 3) {
+    DEBUG_HIP_MEM_POOL_VMHEAP = false;
+  }
 
   // Check Support for Buffer sharing with dma_buf
   std::ignore = Hsa::system_get_info(
