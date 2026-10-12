@@ -91,7 +91,7 @@ architecture_t::cwsr_record_t::nwg_in_cluster () const
 {
   /* By default, there is a single workgroup.  See the comment in
      cluster_ids above.  */
-  return {1, 1, 1};
+  return { 1, 1, 1 };
 }
 
 /* Base class for all AMDGCN architectures.  */
@@ -891,8 +891,8 @@ amdgcn_architecture_t::branch_target (wave_t &wave, agent_address_t pc,
       uint32_t csp;
       wave.read_register (amdgpu_regnum_t::csp, &csp);
 
-      amdgpu_regnum_t regnum = (amdgpu_regnum_t::s0
-                                + utils::narrow<amdgpu_regdiff_t> (--csp * 4));
+      amdgpu_regnum_t regnum
+        = (amdgpu_regnum_t::s0 + utils::narrow<amdgpu_regdiff_t> (--csp * 4));
 
       uint32_t pc_lo, pc_hi;
       wave.read_register (regnum + 2, &pc_lo);
@@ -1384,20 +1384,23 @@ amdgcn_architecture_t::set_exceptions (wave_t &wave, exception_mask_t mask,
 
   uint32_t trapsts;
   wave.read_register (amdgpu_regnum_t::trapsts, &trapsts);
-  utils::for_each_flag (mask, [&] (exception_mask_t single_exception)
-    {
-      /* For each exception, set or clear the corresponding bit in TRAPSTS.  */
-      auto trapsts_bit = convert_exception (single_exception);
-      if (trapsts_bit != 0)
-        {
-          if ((exceptions & single_exception) != 0)
-            trapsts |= trapsts_bit;
-          else
-            trapsts &= ~trapsts_bit;
-        }
-      else
-        unhandled_exceptions |= single_exception;
-    });
+  utils::for_each_flag (mask,
+                        [&] (exception_mask_t single_exception)
+                        {
+                          /* For each exception, set or clear the corresponding
+                           * bit in TRAPSTS.  */
+                          auto trapsts_bit
+                            = convert_exception (single_exception);
+                          if (trapsts_bit != 0)
+                            {
+                              if ((exceptions & single_exception) != 0)
+                                trapsts |= trapsts_bit;
+                              else
+                                trapsts &= ~trapsts_bit;
+                            }
+                          else
+                            unhandled_exceptions |= single_exception;
+                        });
   wave.write_register (amdgpu_regnum_t::trapsts, trapsts);
 
   return unhandled_exceptions;
@@ -1446,8 +1449,8 @@ amdgcn_architecture_t::clear_stop_reasons (
     exceptions |= exception_mask_t::trap_after_inst;
   if (stop_reason & AMD_DBGAPI_WAVE_STOP_REASON_WATCHPOINT)
     exceptions |= exception_mask_t::addr_watch0 | exception_mask_t::addr_watch1
-      | exception_mask_t::addr_watch2
-      | exception_mask_t::addr_watch3;
+                  | exception_mask_t::addr_watch2
+                  | exception_mask_t::addr_watch3;
 
   set_exceptions (wave, exceptions, {});
 }
@@ -2143,11 +2146,14 @@ amdgcn_architecture_t::register_read_only_mask (amdgpu_regnum_t regnum) const
     case amdgpu_regnum_t::pseudo_status:
       {
         static uint32_t status_read_only_bits
-          = (utils::bit_mask<uint32_t> (5, 7)       /* priv, trap_en, ttrace_en */
-             | utils::bit_mask<uint32_t> (9, 12)    /* execz, vccz, in_tg, in_barrier */
-             | utils::bit_mask<uint32_t> (14,16)    /* trap, ttrace_cu_en, valid */
-             | utils::bit_mask<uint32_t> (18, 19)   /* skip_export, perf_en */
-             | utils::bit_mask<uint32_t> (22, 26)   /* allow_replay, fatal_halt, 0 */
+          = (utils::bit_mask<uint32_t> (5, 7) /* priv, trap_en, ttrace_en */
+             | utils::bit_mask<uint32_t> (
+               9, 12) /* execz, vccz, in_tg, in_barrier */
+             | utils::bit_mask<uint32_t> (14,
+                                          16) /* trap, ttrace_cu_en, valid */
+             | utils::bit_mask<uint32_t> (18, 19) /* skip_export, perf_en */
+             | utils::bit_mask<uint32_t> (22,
+                                          26) /* allow_replay, fatal_halt, 0 */
              | utils::bit_mask<uint32_t> (28, 31)); /* 0 */
         return &status_read_only_bits;
       }
@@ -2657,16 +2663,14 @@ gfx9_architecture_t::gfx9_architecture_t (elf_amdgpu_machine_t e_machine,
   const auto scalar_register_count
     = gfx9_architecture_t::scalar_register_count ();
 
-  scalar_registers.add_registers
-    (amdgpu_regnum_t::first_sgpr,
-     (amdgpu_regnum_t::first_sgpr
-      + utils::narrow<amdgpu_regdiff_t> (scalar_register_count)
-      - 1));
-  scalar_registers.add_registers
-    (amdgpu_regnum_t::first_shadow_sgpr,
-     (amdgpu_regnum_t::first_shadow_sgpr
-      + utils::narrow<amdgpu_regdiff_t> (scalar_register_count)
-      - 1));
+  scalar_registers.add_registers (
+    amdgpu_regnum_t::first_sgpr,
+    (amdgpu_regnum_t::first_sgpr
+     + utils::narrow<amdgpu_regdiff_t> (scalar_register_count) - 1));
+  scalar_registers.add_registers (
+    amdgpu_regnum_t::first_shadow_sgpr,
+    (amdgpu_regnum_t::first_shadow_sgpr
+     + utils::narrow<amdgpu_regdiff_t> (scalar_register_count) - 1));
 
   /* Vector registers: [v0-v255]  */
   auto &vector_registers = create<register_class_t> (*this, "vector");
@@ -2695,11 +2699,10 @@ gfx9_architecture_t::gfx9_architecture_t (elf_amdgpu_machine_t e_machine,
 
   /* General registers: [{scalar}, {vector}, pc, exec, vcc]  */
   auto &general_registers = create<register_class_t> (*this, "general");
-  general_registers.add_registers
-    (amdgpu_regnum_t::first_sgpr,
-     amdgpu_regnum_t::first_sgpr
-     + utils::narrow<amdgpu_regdiff_t> (scalar_register_count)
-     - 1);
+  general_registers.add_registers (
+    amdgpu_regnum_t::first_sgpr,
+    amdgpu_regnum_t::first_sgpr
+      + utils::narrow<amdgpu_regdiff_t> (scalar_register_count) - 1);
   general_registers.add_registers (amdgpu_regnum_t::v0_64,
                                    amdgpu_regnum_t::v255_64);
   general_registers.add_registers (amdgpu_regnum_t::m0, amdgpu_regnum_t::m0);
@@ -3277,7 +3280,7 @@ gfx9_architecture_t::cwsr_record_t::register_address (
     {
       return (hwregs_addr
               + utils::narrow<size_t> (regnum - amdgpu_regnum_t::first_hwreg)
-              * hwreg_size);
+                  * hwreg_size);
     }
 
   size_t sgpr_count = this->sgpr_count ();
@@ -3288,8 +3291,8 @@ gfx9_architecture_t::cwsr_record_t::register_address (
                              + architecture.scalar_alias_count ());
   amdgpu_regnum_t aliased_sgpr_end
     = (amdgpu_regnum_t::first_sgpr
-       + utils::narrow<amdgpu_regdiff_t> (std::min (arch_scalars_count,
-                                                    sgpr_count)));
+       + utils::narrow<amdgpu_regdiff_t> (
+         std::min (arch_scalars_count, sgpr_count)));
 
   auto scalar_alias_count = architecture.scalar_alias_count ();
 
@@ -3342,9 +3345,9 @@ gfx9_architecture_t::cwsr_record_t::register_address (
 
   if (regnum >= amdgpu_regnum_t::first_sgpr && regnum < aliased_sgpr_end)
     {
-      return (sgprs_addr
-              + (utils::narrow<size_t> (regnum - amdgpu_regnum_t::s0)
-                 * sgpr_size));
+      return (
+        sgprs_addr
+        + (utils::narrow<size_t> (regnum - amdgpu_regnum_t::s0) * sgpr_size));
     }
 
   size_t vgpr_count = this->vgpr_count ();
@@ -3399,11 +3402,10 @@ gfx9_architecture_t::control_stack_iterate (
           /* cwsr_record_t ctor marks the CWSR record to be in cluster mode
              if the record is the first wave of a cluster, even if
              in_cluster_so_far is false.  */
-          auto cwsr_record
-            = make_cwsr_record (queue, xcc_id, relaunch, state,
-                                last_wave_area
-                                - context_save_area_adjustment (),
-                                in_cluster_so_far);
+          auto cwsr_record = make_cwsr_record (
+            queue, xcc_id, relaunch, state,
+            last_wave_area - context_save_area_adjustment (),
+            in_cluster_so_far);
           in_cluster_so_far
             = ((in_cluster_so_far || cwsr_record->is_first_of_cluster ())
                && !cwsr_record->is_last_of_cluster ());
@@ -3576,12 +3578,10 @@ protected:
     register_address (amdgpu_regnum_t regnum) const override;
   };
 
-  std::unique_ptr<architecture_t::cwsr_record_t>
-  make_cwsr_record (compute_queue_t &queue, uint32_t xcc_id,
-                    uint32_t compute_relaunch_wave,
-                    const std::vector<uint32_t> &compute_relaunch_state,
-                    agent_address_t context_save_address,
-                    bool in_cluster) const override
+  std::unique_ptr<architecture_t::cwsr_record_t> make_cwsr_record (
+    compute_queue_t &queue, uint32_t xcc_id, uint32_t compute_relaunch_wave,
+    const std::vector<uint32_t> &compute_relaunch_state,
+    agent_address_t context_save_address, bool in_cluster) const override
     = 0;
 
   mi_architecture_t (elf_amdgpu_machine_t e_machine,
@@ -4013,20 +4013,23 @@ gfx9_4_architecture_t::set_exceptions (wave_t &wave, exception_mask_t mask,
 
   uint32_t trapsts;
   wave.read_register (amdgpu_regnum_t::trapsts, &trapsts);
-  utils::for_each_flag (mask, [&] (exception_mask_t single_exception)
-    {
-      /* For each exception, set or clear the corresponding bit in TRAPSTS.  */
-      auto trapsts_bit = convert_exception (single_exception);
-      if (trapsts_bit != 0)
-        {
-          if ((exceptions & single_exception) != 0)
-            trapsts |= trapsts_bit;
-          else
-            trapsts &= ~trapsts_bit;
-        }
-      else
-        unhandled_exceptions |= single_exception;
-    });
+  utils::for_each_flag (mask,
+                        [&] (exception_mask_t single_exception)
+                        {
+                          /* For each exception, set or clear the corresponding
+                           * bit in TRAPSTS.  */
+                          auto trapsts_bit
+                            = convert_exception (single_exception);
+                          if (trapsts_bit != 0)
+                            {
+                              if ((exceptions & single_exception) != 0)
+                                trapsts |= trapsts_bit;
+                              else
+                                trapsts &= ~trapsts_bit;
+                            }
+                          else
+                            unhandled_exceptions |= single_exception;
+                        });
   wave.write_register (amdgpu_regnum_t::trapsts, trapsts);
 
   return unhandled_exceptions;
@@ -4270,11 +4273,14 @@ gfx9_4_architecture_t::register_read_only_mask (amdgpu_regnum_t regnum) const
     case amdgpu_regnum_t::pseudo_status:
       {
         static uint32_t status_read_only_bits
-          = (utils::bit_mask<uint32_t> (5, 7)       /* priv, trap_en, ttrace_en */
-             | utils::bit_mask<uint32_t> (9, 12)    /* execz, vccz, in_tg, in_barrier */
-             | utils::bit_mask<uint32_t> (14, 16)   /* trap, ttrace_cu_en, valid */
-             | utils::bit_mask<uint32_t> (18, 19)   /* skip_export, perf_en */
-             | utils::bit_mask<uint32_t> (22, 26)   /* allow_replay, fatal_halt, 0 */
+          = (utils::bit_mask<uint32_t> (5, 7) /* priv, trap_en, ttrace_en */
+             | utils::bit_mask<uint32_t> (
+               9, 12) /* execz, vccz, in_tg, in_barrier */
+             | utils::bit_mask<uint32_t> (14,
+                                          16) /* trap, ttrace_cu_en, valid */
+             | utils::bit_mask<uint32_t> (18, 19) /* skip_export, perf_en */
+             | utils::bit_mask<uint32_t> (22,
+                                          26) /* allow_replay, fatal_halt, 0 */
              | utils::bit_mask<uint32_t> (29, 30)); /* 0 */
         return &status_read_only_bits;
       }
@@ -4556,19 +4562,17 @@ gfx10_architecture_t::gfx10_architecture_t (elf_amdgpu_machine_t e_machine,
   auto gfx10_scalar_register_count
     = gfx10_architecture_t::scalar_register_count ();
 
-  scalar_registers->add_registers
-    ((amdgpu_regnum_t::first_sgpr
-      + utils::narrow<amdgpu_regdiff_t> (gfx9_scalar_register_count)),
-     (amdgpu_regnum_t::first_sgpr
-      + utils::narrow<amdgpu_regdiff_t> (gfx10_scalar_register_count)
-      - 1));
+  scalar_registers->add_registers (
+    (amdgpu_regnum_t::first_sgpr
+     + utils::narrow<amdgpu_regdiff_t> (gfx9_scalar_register_count)),
+    (amdgpu_regnum_t::first_sgpr
+     + utils::narrow<amdgpu_regdiff_t> (gfx10_scalar_register_count) - 1));
 
-  scalar_registers->add_registers
-    ((amdgpu_regnum_t::first_shadow_sgpr
-      + utils::narrow<amdgpu_regdiff_t> (gfx9_scalar_register_count)),
-     (amdgpu_regnum_t::first_shadow_sgpr
-      + utils::narrow<amdgpu_regdiff_t> (gfx10_scalar_register_count)
-      - 1));
+  scalar_registers->add_registers (
+    (amdgpu_regnum_t::first_shadow_sgpr
+     + utils::narrow<amdgpu_regdiff_t> (gfx9_scalar_register_count)),
+    (amdgpu_regnum_t::first_shadow_sgpr
+     + utils::narrow<amdgpu_regdiff_t> (gfx10_scalar_register_count) - 1));
 
   /* Vector registers: [v0_32-v255_32]  */
   register_class_t *vector_registers
@@ -4591,7 +4595,8 @@ gfx10_architecture_t::gfx10_architecture_t (elf_amdgpu_machine_t e_machine,
   /* gfx10.1 still supports xnack_mask, but only 32bit wide.  */
   if (e_machine == EF_AMDGPU_MACH_AMDGCN_GFX1010
       || e_machine == EF_AMDGPU_MACH_AMDGCN_GFX1011
-      || e_machine == EF_AMDGPU_MACH_AMDGCN_GFX1012)
+      || e_machine == EF_AMDGPU_MACH_AMDGCN_GFX1012
+      || e_machine == EF_AMDGPU_MACH_AMDGCN_GFX1013)
     system_registers->add_registers (amdgpu_regnum_t::xnack_mask_32,
                                      amdgpu_regnum_t::xnack_mask_32);
 
@@ -4601,12 +4606,11 @@ gfx10_architecture_t::gfx10_architecture_t (elf_amdgpu_machine_t e_machine,
                { return register_class.name () == "general"; });
   dbgapi_assert (general_registers != nullptr);
 
-  general_registers->add_registers
-    ((amdgpu_regnum_t::first_sgpr
-      + utils::narrow<amdgpu_regdiff_t> (gfx9_scalar_register_count)),
-     (amdgpu_regnum_t::first_sgpr
-      + utils::narrow<amdgpu_regdiff_t> (gfx10_scalar_register_count)
-      - 1));
+  general_registers->add_registers (
+    (amdgpu_regnum_t::first_sgpr
+     + utils::narrow<amdgpu_regdiff_t> (gfx9_scalar_register_count)),
+    (amdgpu_regnum_t::first_sgpr
+     + utils::narrow<amdgpu_regdiff_t> (gfx10_scalar_register_count) - 1));
   general_registers->add_registers (amdgpu_regnum_t::v0_32,
                                     amdgpu_regnum_t::v255_32);
   general_registers->add_registers (amdgpu_regnum_t::pseudo_exec_32,
@@ -5063,15 +5067,14 @@ gfx10_architecture_t::cwsr_record_t::register_address (
   if (regnum >= (amdgpu_regnum_t::v0_32
                  + utils::narrow<amdgpu_regdiff_t> (private_vgpr_count))
       && regnum <= amdgpu_regnum_t::v255_32
-      && ((regnum - amdgpu_regnum_t::v0_32)
-          < utils::narrow<amdgpu_regdiff_t> (private_vgpr_count
-                                             + shared_vgpr_count)))
+      && ((regnum - amdgpu_regnum_t::v0_32) < utils::narrow<amdgpu_regdiff_t> (
+            private_vgpr_count + shared_vgpr_count)))
     {
       return (shared_vgprs_addr
-              + (utils::narrow<size_t>
-                 (regnum
-                  - (amdgpu_regnum_t::v0_32
-                     + utils::narrow<amdgpu_regdiff_t> (private_vgpr_count)))
+              + (utils::narrow<size_t> (
+                   regnum
+                   - (amdgpu_regnum_t::v0_32
+                      + utils::narrow<amdgpu_regdiff_t> (private_vgpr_count)))
                  * shared_vgpr_size));
     }
 
@@ -5411,6 +5414,15 @@ public:
   }
 };
 
+class gfx1013_t final : public gfx10_1_t
+{
+public:
+  gfx1013_t ()
+    : gfx10_1_t (EF_AMDGPU_MACH_AMDGCN_GFX1013, "amdgcn-amd-amdhsa--gfx1013")
+  {
+  }
+};
+
 class gfx10_3_t : public gfx10_1_t
 {
 protected:
@@ -5667,20 +5679,23 @@ gfx11_architecture_t::set_exceptions (wave_t &wave, exception_mask_t mask,
 
   uint32_t trapsts;
   wave.read_register (amdgpu_regnum_t::trapsts, &trapsts);
-  utils::for_each_flag (mask, [&] (exception_mask_t single_exception)
-    {
-      /* For each exception, set or clear the corresponding bit in TRAPSTS.  */
-      auto trapsts_bit = convert_exception (single_exception);
-      if (trapsts_bit != 0)
-        {
-          if ((exceptions & single_exception) != 0)
-            trapsts |= trapsts_bit;
-          else
-            trapsts &= ~trapsts_bit;
-        }
-      else
-        unhandled_exceptions |= single_exception;
-    });
+  utils::for_each_flag (mask,
+                        [&] (exception_mask_t single_exception)
+                        {
+                          /* For each exception, set or clear the corresponding
+                           * bit in TRAPSTS.  */
+                          auto trapsts_bit
+                            = convert_exception (single_exception);
+                          if (trapsts_bit != 0)
+                            {
+                              if ((exceptions & single_exception) != 0)
+                                trapsts |= trapsts_bit;
+                              else
+                                trapsts &= ~trapsts_bit;
+                            }
+                          else
+                            unhandled_exceptions |= single_exception;
+                        });
   wave.write_register (amdgpu_regnum_t::trapsts, trapsts);
 
   return unhandled_exceptions;
@@ -6676,7 +6691,9 @@ gfx12_architecture_t::set_exceptions (wave_t &wave, exception_mask_t mask,
   uint32_t excp_flag_priv_reg, excp_flag_user_reg;
   wave.read_register (amdgpu_regnum_t::excp_flag_priv, &excp_flag_priv_reg);
   wave.read_register (amdgpu_regnum_t::excp_flag_user, &excp_flag_user_reg);
-  utils::for_each_flag (mask, [&] (exception_mask_t single_exception)
+  utils::for_each_flag (
+    mask,
+    [&] (exception_mask_t single_exception)
     {
       /* For each exception, set or clear the corresponding bit.  */
       auto excp_flag_priv_bit = convert_priv_exception (single_exception);
@@ -7036,7 +7053,8 @@ gfx12_architecture_t::register_read_only_mask (amdgpu_regnum_t regnum) const
       {
         static uint32_t state_priv_ro_bits
           = (utils::bit_mask<uint32_t> (15, 17)
-             | utils::bit_mask<uint32_t> (19, 20) /* PERF_EN and TTRACE_EN are RO.  */
+             | utils::bit_mask<uint32_t> (
+               19, 20) /* PERF_EN and TTRACE_EN are RO.  */
              | utils::bit_mask<uint32_t> (21, 31));
         return &state_priv_ro_bits;
       }
@@ -7720,8 +7738,7 @@ protected:
                    uint32_t compute_relaunch_wave,
                    uint32_t compute_relaunch_state,
                    uint32_t compute_relaunch2_state,
-                   agent_address_t context_save_address,
-                   bool in_cluster)
+                   agent_address_t context_save_address, bool in_cluster)
       : gfx12_architecture_t::cwsr_record_t (
           queue, xcc_id, compute_relaunch_wave, compute_relaunch_state,
           compute_relaunch2_state, context_save_address)
@@ -7748,12 +7765,10 @@ protected:
     bool m_in_cluster;
   };
 
-  std::unique_ptr<architecture_t::cwsr_record_t>
-  make_cwsr_record (compute_queue_t &queue, uint32_t xcc_id,
-                    uint32_t compute_relaunch_wave,
-                    const std::vector<uint32_t> &compute_relaunch_state,
-                    agent_address_t context_save_address,
-                    bool in_cluster) const override
+  std::unique_ptr<architecture_t::cwsr_record_t> make_cwsr_record (
+    compute_queue_t &queue, uint32_t xcc_id, uint32_t compute_relaunch_wave,
+    const std::vector<uint32_t> &compute_relaunch_state,
+    agent_address_t context_save_address, bool in_cluster) const override
   {
     dbgapi_assert (compute_relaunch_state.size () == 2);
     return std::make_unique<cwsr_record_t> (
@@ -7877,8 +7892,7 @@ gfx12_5_architecture_t::get_apertures (const os_agent_info_t &info) const
     });
 
   const address_space_t *global_lane = find_if (
-    [] (const address_space_t &address_space)
-    {
+    [] (const address_space_t &address_space) {
       return address_space.kind () == address_space_t::kind_t::global_swizzled;
     },
     /* all  */ true);
@@ -7954,6 +7968,7 @@ gfx12_5_architecture_t::gfx12_5_architecture_t (elf_amdgpu_machine_t e_machine,
        EF_AMDGPU_MACH_AMDGCN_GFX1010
        EF_AMDGPU_MACH_AMDGCN_GFX1011
        EF_AMDGPU_MACH_AMDGCN_GFX1012
+       EF_AMDGPU_MACH_AMDGCN_GFX1013
 
      So, it won't be useful to us.  We have to add it explicitly.  */
   sys_regs.add_registers (amdgpu_regnum_t::xnack_mask_32,
@@ -8128,13 +8143,15 @@ gfx12_5_architecture_t::cwsr_record_t::is_last_wave () const
 bool
 gfx12_5_architecture_t::cwsr_record_t::is_first_of_cluster () const
 {
-  return compute_relaunch_wave_payload_first_of_cluster (m_compute_relaunch_wave);
+  return compute_relaunch_wave_payload_first_of_cluster (
+    m_compute_relaunch_wave);
 }
 
 bool
 gfx12_5_architecture_t::cwsr_record_t::is_last_of_cluster () const
 {
-  return compute_relaunch_wave_payload_last_of_cluster (m_compute_relaunch_wave);
+  return compute_relaunch_wave_payload_last_of_cluster (
+    m_compute_relaunch_wave);
 }
 
 std::optional<std::array<uint32_t, 3>>
@@ -8155,7 +8172,7 @@ std::array<uint32_t, 3>
 gfx12_5_architecture_t::cwsr_record_t::nwg_in_cluster () const
 {
   if (!m_in_cluster)
-    return {1, 1, 1};
+    return { 1, 1, 1 };
 
   uint32_t ttmp6;
   const agent_address_t ttmp6_address
@@ -8399,8 +8416,7 @@ gfx12_5_architecture_t::is_branch_taken (
 }
 
 agent_address_t
-gfx12_5_architecture_t::branch_target (wave_t &wave,
-                                       agent_address_t pc,
+gfx12_5_architecture_t::branch_target (wave_t &wave, agent_address_t pc,
                                        const instruction_t &instruction) const
 {
   dbgapi_assert (instruction.is_valid ());
@@ -8679,8 +8695,8 @@ architecture_t::get_info (amd_dbgapi_architecture_info_t query,
     case AMD_DBGAPI_ARCHITECTURE_INFO_CLUSTERS_SUPPORTED:
       utils::get_info (value_size, value,
                        (supports_clusters ()
-                        ? AMD_DBGAPI_CLUSTERS_SUPPORTED
-                        : AMD_DBGAPI_CLUSTERS_UNSUPPORTED));
+                          ? AMD_DBGAPI_CLUSTERS_SUPPORTED
+                          : AMD_DBGAPI_CLUSTERS_UNSUPPORTED));
       return;
     }
 
@@ -8712,6 +8728,7 @@ decltype (architecture_t::s_architecture_map)
       map.emplace (make_architecture<gfx1010_t> ());
       map.emplace (make_architecture<gfx1011_t> ());
       map.emplace (make_architecture<gfx1012_t> ());
+      map.emplace (make_architecture<gfx1013_t> ());
       map.emplace (make_architecture<gfx10_3_generic_t> ());
       map.emplace (make_architecture<gfx1030_t> ());
       map.emplace (make_architecture<gfx1031_t> ());
