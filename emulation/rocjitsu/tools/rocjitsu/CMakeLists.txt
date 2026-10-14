@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 include(rj_configure_target)
+include(GNUInstallDirs)
 
 add_library(
     rocjitsu_cli_launch_preload
@@ -17,12 +18,47 @@ target_compile_definitions(rocjitsu_cli_launch_preload PRIVATE _GNU_SOURCE)
 target_link_libraries(rocjitsu_cli_launch_preload PUBLIC ${CMAKE_DL_LIBS})
 rj_configure_target(rocjitsu_cli_launch_preload TOOL)
 
+add_library(rocjitsu_cli_json STATIC json_output.cpp)
+target_include_directories(rocjitsu_cli_json PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+rj_configure_target(rocjitsu_cli_json TOOL)
+
 add_executable(rocjitsu_bin main.cpp)
 
 target_include_directories(
     rocjitsu_bin
     PRIVATE ${GENERATED_DIR} ${RJ_VERSION_INCLUDE_DIR}
 )
+target_compile_definitions(
+    rocjitsu_bin
+    PRIVATE
+        RJ_SOURCE_CONFIG_DIR="${PROJECT_SOURCE_DIR}/configs"
+        RJ_INSTALL_CONFIG_DIR="${CMAKE_INSTALL_FULL_DATADIR}/rocjitsu/configs"
+        RJ_INSTALL_CONFIG_RELDIR="${CMAKE_INSTALL_DATADIR}/rocjitsu/configs"
+)
+
+file(
+    GLOB _rj_profile_config_sources
+    CONFIGURE_DEPENDS
+    "${PROJECT_SOURCE_DIR}/configs/*.json"
+)
+set(_rj_build_tree_config_dir "${CMAKE_CURRENT_BINARY_DIR}/../../configs")
+set(_rj_build_tree_config_stamp
+    "${_rj_build_tree_config_dir}/.rocjitsu-configs.stamp"
+)
+add_custom_command(
+    OUTPUT "${_rj_build_tree_config_stamp}"
+    COMMAND
+        ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/configs"
+        "${_rj_build_tree_config_dir}"
+    COMMAND ${CMAKE_COMMAND} -E touch "${_rj_build_tree_config_stamp}"
+    DEPENDS ${_rj_profile_config_sources}
+    COMMENT "Staging rocjitsu configs for build-tree profile lookup"
+)
+add_custom_target(
+    rocjitsu_stage_configs
+    DEPENDS "${_rj_build_tree_config_stamp}"
+)
+add_dependencies(rocjitsu_bin rocjitsu_stage_configs)
 
 target_link_libraries(
     rocjitsu_bin
@@ -49,6 +85,7 @@ target_link_libraries(
         Threads::Threads
         rocjitsu_cli
         rocjitsu_cli_launch_preload
+        rocjitsu_cli_json
         rocjitsu_version
 )
 
@@ -68,7 +105,6 @@ rj_configure_target(rocjitsu_bin TOOL)
 
 # Install the rocjitsu CLI so it is usable from a packaged dist as the default
 # entrypoint for driving emulation.
-include(GNUInstallDirs)
 install(TARGETS rocjitsu_bin RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 if(BUILD_TESTING)
