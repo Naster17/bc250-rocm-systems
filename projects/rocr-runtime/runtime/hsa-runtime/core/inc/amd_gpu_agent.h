@@ -725,9 +725,9 @@ class GpuAgent : public GpuAgentInt {
   double historical_clock_ratio_;
 
   // @brief Offset (in GPU ticks) between AQL dispatch timestamp clock and
-  // D3DKMTQueryClockCalibration GPU clock.  Non-zero on Windows where the two
-  // GPU clock domains share frequency but differ in epoch.  Computed on first
-  // TranslateTime call; zero on Linux (clocks match).
+  // calibration GPU clock. Non-zero on Windows or native gfx1013 when the
+  // counters share frequency but differ in epoch. Detected from a completed
+  // dispatch translated into the future; other Linux GPUs keep zero.
   int64_t gpu_clock_offset_;
 
   // @brief s_memrealtime nominal clock frequency
