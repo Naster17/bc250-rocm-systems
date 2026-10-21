@@ -5607,9 +5607,21 @@ void *VirtualGPU::getOrCreateHostcallBuffer() {
   }
 
   uint32_t zero = 0;
-  // xferMgr() is synchronous, so the fill completes before any kernel reads it.
-  if (!dev().xferMgr().fillBuffer(*occupiedMem, &zero, sizeof(zero), amd::Coord3D(occupiedSize, 1, 1),
-                                  amd::Coord3D(0, 0, 0), amd::Coord3D(occupiedSize, 1, 1), true)) {
+  bool initialized = false;
+  if (auto* transfer = dev().xferQueue(); transfer != nullptr) {
+    // Idle internal streams participate in dynamic HW queue reclamation too.
+    // A direct blit does not enter profilingBegin(), which normally reacquires
+    // the queue. Hold execution() across reacquisition and the synchronous fill
+    // so ReleaseHwQueue() cannot detach it before the AQL dispatch.
+    std::scoped_lock transfer_execution(transfer->execution());
+    transfer->AcquireHwQueueIfNeeded();
+    if (transfer->gpu_queue() != nullptr) {
+      initialized = transfer->blitMgr().fillBuffer(
+          *occupiedMem, &zero, sizeof(zero), amd::Coord3D(occupiedSize, 1, 1),
+          amd::Coord3D(0, 0, 0), amd::Coord3D(occupiedSize, 1, 1), true);
+    }
+  }
+  if (!initialized) {
     ClPrint(amd::LOG_ERROR, amd::LOG_QUEUE,
             "Failed to zero-initialize hostcall occupied bitfield");
     occupiedBuf->release();
