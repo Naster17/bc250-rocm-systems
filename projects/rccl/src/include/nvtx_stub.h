@@ -16,6 +16,7 @@ struct nccl_domain {
 #define NVTX3_FUNC_RANGE_IN(domain)
 #define nvtxNameOsThreadA(syscall, thread)
 #define NVTX3_FUNC_WITH_PARAMS(N, T, P)
+#define NCCL_NVTX3_FUNC_RANGE
 #define NVTX3_PAYLOAD(...) __VA_ARGS__
 #define NVTX3_RANGE(T)
 #define NVTX3_RANGE_ADD_PAYLOAD(N, S, P)

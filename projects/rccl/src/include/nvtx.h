@@ -8,6 +8,10 @@
 #ifndef NCCL_NVTX_H_
 #define NCCL_NVTX_H_
 
+#ifdef NVTX_NO_IMPL
+#include "nvtx_stub.h"
+#else
+
 #include "nvtx3/nvtx3.hpp"
 #include "roctx.h"
 
@@ -250,6 +254,8 @@ private:
     nvtx3_range__.setPayloadData(schema_id); \
   } while (0)
 #endif
+
+#endif // NVTX_NO_IMPL
 
 extern void initNvtxRegisteredEnums();
 
