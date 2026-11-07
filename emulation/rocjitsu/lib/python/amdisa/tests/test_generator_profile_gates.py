@@ -4393,9 +4393,9 @@ def test_generated_pseudo_scalar_vop3_paths_ignore_exec_and_f16_opsel(
                 bridge = (
                     generated_root.parents[1] / 'shared/rj_arith_float_exec.h'
                 ).read_text()
-                begin = bridge.index('inline void execute_pseudo_scalar(')
-                end = bridge.index('inline uint64_t float32_flags(', begin)
-                adapter = bridge[begin:end]
+                adapter = _generated_function_body(
+                    bridge, 'inline void execute_pseudo_scalar('
+                )
                 assert 'wave.exec()' not in adapter
                 assert 'registers.read_scalar(source)' in adapter
                 assert 'registers.write_scalar(destination, result)' in adapter

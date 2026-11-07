@@ -14,6 +14,7 @@ add_library(
     mfma/mfma_fp8.cpp
     common/cpu.cpp
     common/cpu_decode.cpp
+    conversion/float16_conversion.cpp
     conversion/byte_conversion.cpp
     conversion/conversion16.cpp
     conversion/conversion32.cpp
@@ -23,6 +24,7 @@ add_library(
     conversion/integer_conversion.cpp
     conversion/normalized.cpp
     conversion/pack.cpp
+    conversion/nibble_pack.cpp
     conversion/packed_conversion.cpp
     compare/class.cpp
     compare/constant_compare.cpp
