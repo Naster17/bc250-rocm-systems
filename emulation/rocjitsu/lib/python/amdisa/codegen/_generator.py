@@ -15632,13 +15632,44 @@ class CodeGenerator:
                     cpp_includes.append(
                         ('rocjitsu/isa/arch/amdgpu/shared/rj_arith_lane_exec.h', False)
                     )
-                from amdisa.codegen.execute.rj_arith_float import FLOAT_NAMES
+                from amdisa.codegen.execute.rj_arith_float import (
+                    FLOAT_NAMES,
+                    CDNA_BINARY_SELECTION,
+                    CDNA_HALF_SELECTION,
+                    PACKED_TERNARY_SELECTION,
+                    CDNA_TERNARY_SELECTION,
+                    TERNARY_SELECTION_RDNA4,
+                )
 
-                if self.isa_spec.arch_name in ('rdna3', 'rdna4') and any(
-                    i.name in FLOAT_NAMES for i in all_insts
-                ):
+                float_names = (
+                    FLOAT_NAMES
+                    if self.isa_spec.arch_name in ('rdna3', 'rdna4')
+                    else (
+                        CDNA_BINARY_SELECTION
+                        | CDNA_HALF_SELECTION
+                        | PACKED_TERNARY_SELECTION
+                        | CDNA_TERNARY_SELECTION
+                        | TERNARY_SELECTION_RDNA4
+                    )
+                )
+                if self.isa_spec.arch_name in (
+                    'rdna3',
+                    'rdna4',
+                    'cdna3',
+                    'cdna4',
+                    'cdna5',
+                ) and any(i.name in float_names for i in all_insts):
                     cpp_includes.append(
                         ('rocjitsu/isa/arch/amdgpu/shared/rj_arith_float_exec.h', False)
+                    )
+                if self.isa_spec.arch_name in ('cdna3', 'cdna4') and any(
+                    i.name in {'V_MIN_F16', 'V_MAX_F16'} for i in all_insts
+                ):
+                    cpp_includes.append(
+                        (
+                            'rocjitsu/isa/arch/amdgpu/shared/rj_arith_cdna_selection_exec.h',
+                            False,
+                        )
                     )
                 from amdisa.codegen.execute.rj_arith_vector import (
                     VECTOR32_NAMES,
