@@ -26,8 +26,8 @@ namespace {
 // integer rounding rather than changing the CPU environment.
 template <rocjitsu::arith::Binary Op, bool Rdna3>
 int packed_arithmetic_modes(uint64_t flags, uint32_t exec_mask, uint32_t instruction_flags,
-                            uint32_t *const *d, const uint32_t *const *a,
-                            const uint32_t *const *b) {
+                            uint32_t *const *d, const uint32_t *const *a, const uint32_t *const *b,
+                            rocjitsu::arith::HalfOutputPolicy output = {}) {
   static_assert(Op == rocjitsu::arith::Binary::Add || Op == rocjitsu::arith::Binary::Mul);
   const unsigned rounding = unsigned((flags & RJ_ARITH_FP_ROUND_MASK) >> 24);
   uint32_t result[32] = {};
@@ -92,7 +92,9 @@ int packed_arithmetic_modes(uint64_t flags, uint32_t exec_mask, uint32_t instruc
       // Tininess is judged after rounding: a product that reaches the smallest normal only
       // on the subnormal grid still flushes. Every subnormal result is tiny.
       if ((flags & RJ_ARITH_FP_FLUSH_OUTPUT_DENORMALS) &&
-          rocjitsu::arith::half_rounds_below(value, 0x1p-14, rounding)) {
+          (output.rounded_tininess
+               ? (encoded & 0x7fff) < 0x400
+               : rocjitsu::arith::half_rounds_below(value, 0x1p-14, rounding))) {
         encoded &= 0x8000;
       }
       result[lane] |= uint32_t(encoded) << (half * 16);
@@ -112,7 +114,7 @@ int packed_arithmetic_modes(uint64_t flags, uint32_t exec_mask, uint32_t instruc
 template <rocjitsu::arith::Binary Op, bool Rdna3>
 int arithmetic_modes(uint64_t flags, uint32_t exec_mask, uint32_t instruction_flags,
                      uint32_t *const *d, const uint32_t *const *a, const uint32_t *const *b,
-                     bool compatibility) {
+                     bool compatibility, rocjitsu::arith::HalfOutputPolicy output = {}) {
   const unsigned rounding = unsigned((flags & RJ_ARITH_FP_ROUND_MASK) >> 24);
   const unsigned a_shift = instruction_flags & RJ_ARITH_ALU_HIGH_A ? 16 : 0;
   const unsigned b_shift = instruction_flags & RJ_ARITH_ALU_HIGH_B ? 16 : 0;
@@ -170,15 +172,16 @@ int arithmetic_modes(uint64_t flags, uint32_t exec_mask, uint32_t instruction_fl
     const bool tiny = rocjitsu::arith::half_rounds_below(value, 0x1p-14, rounding);
     // Compatibility retains rocjitsu's FP16 rounding before OMOD. Loose keeps
     // the wider result so that scaling and destination rounding can be combined.
-    if (compatibility && omod && __builtin_isfinite(value)) {
+    if (compatibility && !output.scale_before_rounding && omod && __builtin_isfinite(value)) {
       value = rocjitsu::arith::f16_to_float(rocjitsu::arith::half_fma_narrow(
           rocjitsu::arith::bit_cast<uint64_t>(value), flags & RJ_ARITH_FP16_OVFL, rounding));
     }
     if (omod) {
       // Halving gives a signed zero when the rounded result has the smallest exponent.
-      if (tiny) {
+      if (!output.scale_before_rounding && tiny) {
         value = 0;
-      } else if (omod == 3 && rocjitsu::arith::half_rounds_below(value, 0x1p-13, rounding)) {
+      } else if (!output.scale_before_rounding && omod == 3 &&
+                 rocjitsu::arith::half_rounds_below(value, 0x1p-13, rounding)) {
         value = value < 0 ? -0.0 : 0.0;
       }
       const double scales[] = {1, 2, 4, 0.5};
@@ -202,8 +205,12 @@ int arithmetic_modes(uint64_t flags, uint32_t exec_mask, uint32_t instruction_fl
             : rocjitsu::arith::half_fma_narrow(rocjitsu::arith::bit_cast<uint64_t>(value),
                                                flags & RJ_ARITH_FP16_OVFL, rounding);
     // OMOD has already zeroed tiny results; scaled results are normal.
-    if ((flags & RJ_ARITH_FP_FLUSH_OUTPUT_DENORMALS) && tiny) {
+    if ((flags & RJ_ARITH_FP_FLUSH_OUTPUT_DENORMALS) &&
+        (output.rounded_tininess ? (encoded & 0x7fff) < 0x400 : tiny)) {
       encoded &= 0x8000;
+    }
+    if (output.scale_before_rounding && omod && (encoded & 0x7fff) < 0x400) {
+      encoded = 0;
     }
     result[lane] = encoded;
   }
@@ -220,7 +227,8 @@ template <rocjitsu::arith::Binary Op, bool Packed, bool GuestDenormals, bool Rdn
 [[gnu::noinline]] int half_binary_scalar(uint64_t flags, uint32_t exec_mask,
                                          uint64_t instruction_flags, uint32_t *const *d,
                                          const uint32_t *const *a, const uint32_t *const *b,
-                                         bool compatibility, bool preserve_input_snan) {
+                                         bool compatibility, bool preserve_input_snan,
+                                         rocjitsu::arith::HalfOutputPolicy output = {}) {
   constexpr bool arithmetic = rocjitsu::arith::is_arithmetic(Op);
   // Each packed result half has independent source-half selectors and sign modifiers.
   uint32_t modes[] = {Packed
@@ -295,7 +303,7 @@ template <rocjitsu::arith::Binary Op, bool Packed, bool GuestDenormals, bool Rdn
           value = y;
         }
       }
-      if (arithmetic && !Packed && (m & RJ_ARITH_ALU_OMOD_MASK)) {
+      if (arithmetic && !Packed && !output.scale_before_rounding && (m & RJ_ARITH_ALU_OMOD_MASK)) {
         // OMOD turns a tiny result into +0. Compatibility rounds the others before scaling.
         if (tiny) {
           value = 0;
@@ -314,7 +322,9 @@ template <rocjitsu::arith::Binary Op, bool Packed, bool GuestDenormals, bool Rdn
       uint16_t encoded;
       if constexpr (arithmetic) {
         encoded = rocjitsu::arith::float_to_f16(
-            rocjitsu::arith::alu_output_f16</*AfterRounding=*/true>(value, m),
+            output.scale_before_rounding
+                ? rocjitsu::arith::alu_output(value, m)
+                : rocjitsu::arith::alu_output_f16</*AfterRounding=*/true>(value, m),
             flags & RJ_ARITH_FP16_OVFL);
       } else {
         encoded = uint16_t(rocjitsu::arith::selection_output<16>(
@@ -332,9 +342,15 @@ template <rocjitsu::arith::Binary Op, bool Packed, bool GuestDenormals, bool Rdn
         }
       }
       // Every subnormal result is tiny; OMOD has already zeroed tiny results.
-      if (GuestDenormals && arithmetic && (flags & RJ_ARITH_FP_FLUSH_OUTPUT_DENORMALS) && tiny) {
+      if (GuestDenormals && arithmetic && (flags & RJ_ARITH_FP_FLUSH_OUTPUT_DENORMALS) &&
+          (output.rounded_tininess ? (encoded & 0x7fff) < 0x400 : tiny)) {
         encoded &= 0x8000;
       }
+      if (output.scale_before_rounding && (m & RJ_ARITH_ALU_OMOD_MASK) &&
+          (encoded & 0x7fff) < 0x400) {
+        encoded = 0;
+      }
+
       result[lane] |= uint32_t(encoded) << (16 * half);
     }
   }
@@ -354,14 +370,15 @@ template <rocjitsu::arith::Binary Op, bool Packed, bool GuestDenormals, bool Rdn
 // before changing outputs.
 template <rocjitsu::arith::Binary Op, bool Packed = false, bool Rdna3 = false>
 int half_binary(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags, uint32_t *const *d,
-                const uint32_t *const *a, const uint32_t *const *b, bool compatibility = false) {
+                const uint32_t *const *a, const uint32_t *const *b, bool compatibility = false,
+                rocjitsu::arith::HalfOutputPolicy output = {}) {
   if (instruction_flags >> 32) {
     if constexpr (!Packed) {
       return rocjitsu::arith::execute_dpp(flags, exec_mask, instruction_flags, a,
                                           [&](uint32_t exec_mask, const uint32_t *const *source) {
                                             return half_binary<Op, Packed, Rdna3>(
                                                 flags, exec_mask, uint32_t(instruction_flags), d,
-                                                source, b, compatibility);
+                                                source, b, compatibility, output);
                                           });
     } else {
       return RJ_ARITH_ERROR_INVALID_FLAGS;
@@ -394,36 +411,47 @@ int half_binary(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags, 
   if (exec_mask == 0) {
     return RJ_ARITH_SUCCESS;
   }
+  const bool preserve_input_snan =
+      Packed && Rdna3 && compatibility && !(flags & RJ_ARITH_FP_IEEE_MODE);
+#if defined(RJ_ARITH_HAVE_X86_64_V4)
+  if constexpr (arithmetic) {
+    if (rocjitsu::arith::cpu_level_at_least(flags, RJ_ARITH_CPU_X86_64_V4)) {
+      rocjitsu::arith::half_binary_x86_64_v4<Op, Packed>(
+          flags, exec_mask, uint32_t(instruction_flags), d[0], a[0], b[0], compatibility,
+          preserve_input_snan, output);
+      return RJ_ARITH_SUCCESS;
+    }
+  }
+#endif
+#if defined(RJ_ARITH_HAVE_X86_64_V3)
+  if (rocjitsu::arith::cpu_level_at_least(flags, RJ_ARITH_CPU_X86_64_V3)) {
+    rocjitsu::arith::half_binary_x86_64_v3<Op, Packed>(flags, exec_mask, instruction_flags, d[0],
+                                                       a[0], b[0], compatibility,
+                                                       preserve_input_snan, output);
+    return RJ_ARITH_SUCCESS;
+  }
+#endif
   if constexpr (!Packed && arithmetic) {
     if (flags & RJ_ARITH_FP_ROUND_MASK) {
       return arithmetic_modes<Op, Rdna3>(flags, exec_mask, uint32_t(instruction_flags), d, a, b,
-                                         compatibility);
+                                         compatibility, output);
     }
   }
   if constexpr (Packed && arithmetic) {
     if ((flags & RJ_ARITH_FP_ROUND_MASK) ||
         ((instruction_flags & RJ_ARITH_PK_CLAMP) && (flags & RJ_ARITH_FP_DX10_CLAMP_OFF))) {
       return packed_arithmetic_modes<Op, Rdna3>(flags, exec_mask, uint32_t(instruction_flags), d, a,
-                                                b);
+                                                b, output);
     }
   }
-  const bool preserve_input_snan =
-      Packed && Rdna3 && compatibility && !(flags & RJ_ARITH_FP_IEEE_MODE);
-#if defined(RJ_ARITH_HAVE_X86_64_V3)
-  if (rocjitsu::arith::cpu_level_at_least(flags, RJ_ARITH_CPU_X86_64_V3)) {
-    rocjitsu::arith::half_binary_x86_64_v3<Op, Packed>(
-        flags, exec_mask, instruction_flags, d[0], a[0], b[0], compatibility, preserve_input_snan);
-    return RJ_ARITH_SUCCESS;
-  }
-#endif
   if constexpr (Packed) {
     if (!(flags & (RJ_ARITH_FP_FLUSH_INPUT_DENORMALS | RJ_ARITH_FP_FLUSH_OUTPUT_DENORMALS))) {
-      return half_binary_scalar<Op, Packed, false, Rdna3>(flags, exec_mask, instruction_flags, d, a,
-                                                          b, compatibility, preserve_input_snan);
+      return half_binary_scalar<Op, Packed, false, Rdna3>(
+          flags, exec_mask, instruction_flags, d, a, b, compatibility, preserve_input_snan, output);
     }
   }
   return half_binary_scalar<Op, Packed, true, Rdna3>(flags, exec_mask, instruction_flags, d, a, b,
-                                                     compatibility, preserve_input_snan);
+                                                     compatibility, preserve_input_snan, output);
 }
 
 // Evaluate FP16 binary arithmetic or selection for Wave64. Reject invalid controls before changing
@@ -431,10 +459,10 @@ int half_binary(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags, 
 template <rocjitsu::arith::Binary Op, bool Packed = false, bool Rdna3 = false>
 int half_binary_wave64(uint64_t flags, uint64_t exec_mask, uint64_t instruction_flags,
                        uint32_t *const *d, const uint32_t *const *a, const uint32_t *const *b,
-                       bool compatibility = false) {
+                       bool compatibility = false, rocjitsu::arith::HalfOutputPolicy output = {}) {
   // Validate before either Wave64 half can modify outputs, even when EXEC is empty.
   if (int error = half_binary<Op, Packed, Rdna3>(flags, 0, instruction_flags, nullptr, nullptr,
-                                                 nullptr, compatibility)) {
+                                                 nullptr, compatibility, output)) {
     return error;
   }
   if (!exec_mask) {
@@ -445,13 +473,38 @@ int half_binary_wave64(uint64_t flags, uint64_t exec_mask, uint64_t instruction_
         rocjitsu::arith::dpp_half_wave_instruction_flags(instruction_flags, half);
     uint32_t *dest = d[0] + half * 32;
     const uint32_t *x = a[0] + half * 32, *y = b[0] + half * 32;
-    if (int error =
-            half_binary<Op, Packed, Rdna3>(flags, uint32_t(exec_mask >> (half * 32)),
-                                           half_instruction_flags, &dest, &x, &y, compatibility)) {
+    if (int error = half_binary<Op, Packed, Rdna3>(flags, uint32_t(exec_mask >> (half * 32)),
+                                                   half_instruction_flags, &dest, &x, &y,
+                                                   compatibility, output)) {
       return error;
     }
   }
   return RJ_ARITH_SUCCESS;
+}
+
+// Select CDNA's inherited Compatibility output order, then share arithmetic and SIMD dispatch.
+template <rocjitsu::arith::Binary Op, bool Packed, bool Rdna3, typename Mask>
+int cdna_binary(uint64_t flags, Mask exec_mask, uint64_t mode, uint32_t *const *d,
+                const uint32_t *const *a, const uint32_t *const *b) {
+  const bool compatibility = (flags & RJ_ARITH_SEMANTICS_MASK) == RJ_ARITH_SEMANTICS_COMPATIBILITY;
+  const rocjitsu::arith::HalfOutputPolicy output{compatibility, compatibility && !Packed &&
+                                                                    bool(mode & RJ_ARITH_ALU_SDWA)};
+  if constexpr (!Packed) {
+    mode &= ~uint64_t(RJ_ARITH_ALU_SDWA);
+  }
+  flags = rocjitsu::arith::resolve_compatibility(flags, RJ_ARITH_SEMANTICS_LOOSE);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (rocjitsu::arith::reports_fp_status(flags)) {
+    return RJ_ARITH_ERROR_UNSUPPORTED_FP_STATUS;
+  }
+  if constexpr (sizeof(Mask) == 4) {
+    return half_binary<Op, Packed, Rdna3>(flags, exec_mask, mode, d, a, b, compatibility, output);
+  } else {
+    return half_binary_wave64<Op, Packed, Rdna3>(flags, exec_mask, mode, d, a, b, compatibility,
+                                                 output);
+  }
 }
 
 } // namespace
@@ -1380,4 +1433,101 @@ int rj_arith_v_pk_mul_f16_w64(uint64_t flags, uint64_t exec_mask, uint64_t instr
   }
   return half_binary_wave64<rocjitsu::arith::Binary::Mul, true, true>(
       flags, exec_mask, instruction_flags, d, a, b, compatibility);
+}
+
+// Preserve CDNA Compatibility output stages without changing host FP controls.
+int rj_arith_v_add_f16_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                  uint32_t *const *d, const uint32_t *const *a,
+                                  const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  return cdna_binary<rocjitsu::arith::Binary::Add, false, true>(flags, exec_mask, instruction_flags,
+                                                                d, a, b);
+}
+
+// Preserve CDNA Compatibility output stages without changing host FP controls.
+int rj_arith_v_add_f16_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t instruction_flags,
+                                  uint32_t *const *d, const uint32_t *const *a,
+                                  const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  return cdna_binary<rocjitsu::arith::Binary::Add, false, true>(flags, exec_mask, instruction_flags,
+                                                                d, a, b);
+}
+
+// Preserve CDNA Compatibility output stages without changing host FP controls.
+int rj_arith_v_sub_f16_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                  uint32_t *const *d, const uint32_t *const *a,
+                                  const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  return cdna_binary<rocjitsu::arith::Binary::Sub, false, true>(flags, exec_mask, instruction_flags,
+                                                                d, a, b);
+}
+
+// Preserve CDNA Compatibility output stages without changing host FP controls.
+int rj_arith_v_sub_f16_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t instruction_flags,
+                                  uint32_t *const *d, const uint32_t *const *a,
+                                  const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  return cdna_binary<rocjitsu::arith::Binary::Sub, false, true>(flags, exec_mask, instruction_flags,
+                                                                d, a, b);
+}
+
+// Preserve CDNA Compatibility output stages without changing host FP controls.
+int rj_arith_v_subrev_f16_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                     uint32_t *const *d, const uint32_t *const *a,
+                                     const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  return cdna_binary<rocjitsu::arith::Binary::Subrev, false, true>(flags, exec_mask,
+                                                                   instruction_flags, d, a, b);
+}
+
+// Preserve CDNA Compatibility output stages without changing host FP controls.
+int rj_arith_v_subrev_f16_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t instruction_flags,
+                                     uint32_t *const *d, const uint32_t *const *a,
+                                     const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  return cdna_binary<rocjitsu::arith::Binary::Subrev, false, true>(flags, exec_mask,
+                                                                   instruction_flags, d, a, b);
+}
+
+// Preserve CDNA Compatibility output stages without changing host FP controls.
+int rj_arith_v_mul_f16_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                  uint32_t *const *d, const uint32_t *const *a,
+                                  const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  return cdna_binary<rocjitsu::arith::Binary::Mul, false, true>(flags, exec_mask, instruction_flags,
+                                                                d, a, b);
+}
+
+// Preserve CDNA Compatibility output stages without changing host FP controls.
+int rj_arith_v_mul_f16_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t instruction_flags,
+                                  uint32_t *const *d, const uint32_t *const *a,
+                                  const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  return cdna_binary<rocjitsu::arith::Binary::Mul, false, true>(flags, exec_mask, instruction_flags,
+                                                                d, a, b);
+}
+
+// Preserve CDNA Compatibility output stages without changing host FP controls.
+int rj_arith_v_pk_mul_f16_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                     uint32_t *const *d, const uint32_t *const *a,
+                                     const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  return cdna_binary<rocjitsu::arith::Binary::Mul, true, true>(flags, exec_mask, instruction_flags,
+                                                               d, a, b);
+}
+
+// Preserve CDNA Compatibility output stages without changing host FP controls.
+int rj_arith_v_pk_mul_f16_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t instruction_flags,
+                                     uint32_t *const *d, const uint32_t *const *a,
+                                     const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  return cdna_binary<rocjitsu::arith::Binary::Mul, true, true>(flags, exec_mask, instruction_flags,
+                                                               d, a, b);
+}
+
+// Preserve CDNA Compatibility output stages without changing host FP controls.
+int rj_arith_v_pk_mul_f16_w32_gfx1250(uint64_t flags, uint32_t exec_mask,
+                                      uint64_t instruction_flags, uint32_t *const *d,
+                                      const uint32_t *const *a, const uint32_t *const *b,
+                                      [[maybe_unused]] uint32_t *trapsts) {
+  return cdna_binary<rocjitsu::arith::Binary::Mul, true, false>(flags, exec_mask, instruction_flags,
+                                                                d, a, b);
+}
+// Preserve CDNA Compatibility output stages without changing host FP controls.
+int rj_arith_v_pk_mul_f16_w64_gfx1250(uint64_t flags, uint64_t exec_mask,
+                                      uint64_t instruction_flags, uint32_t *const *d,
+                                      const uint32_t *const *a, const uint32_t *const *b,
+                                      [[maybe_unused]] uint32_t *trapsts) {
+  return cdna_binary<rocjitsu::arith::Binary::Mul, true, false>(flags, exec_mask, instruction_flags,
+                                                                d, a, b);
 }
