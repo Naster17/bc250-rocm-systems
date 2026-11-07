@@ -39,6 +39,12 @@ int arithmetic(uint64_t flags, uint32_t exec_mask, uint64_t mode, uint32_t *cons
   if (exec_mask == 0) {
     return RJ_ARITH_SUCCESS;
   }
+#if defined(RJ_ARITH_HAVE_X86_64_V4)
+  if (rocjitsu::arith::cpu_level_at_least(flags, RJ_ARITH_CPU_X86_64_V4)) {
+    rocjitsu::arith::integer16_x86_64_v4<Op, Signed, Packed>(exec_mask, mode, d[0], a[0], b[0]);
+    return RJ_ARITH_SUCCESS;
+  }
+#endif
 #if defined(RJ_ARITH_HAVE_X86_64_V3)
   if (rocjitsu::arith::cpu_level_at_least(flags, RJ_ARITH_CPU_X86_64_V3)) {
     rocjitsu::arith::integer16_x86_64_v3<Op, Signed, Packed>(exec_mask, mode, d[0], a[0], b[0]);

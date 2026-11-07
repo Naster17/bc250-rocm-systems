@@ -1284,11 +1284,9 @@ def test_integer_dot_dispatch(arch, name):
     body = generator._gen_execute_body(
         inst, derive_semantics(name, 'ENC_VOP3P'), 'ENC_VOP3P'
     )
-    if arch not in ('rdna3', 'rdna4'):
+    if arch == 'rdna3_5':
         assert 'arith::execute_ternary32' not in body
         assert 'rj_arith_' not in body
-        if arch == 'cdna5' and 'DOT4' in name:
-            assert 'inst_.clamp && amdgpu::dot4_clamp_supported(wf)' in body
         return
     assert 'arith::execute_ternary32' in body
     assert 'wf.cu().arithmetic_flags(),' in body
@@ -1296,8 +1294,9 @@ def test_integer_dot_dispatch(arch, name):
         assert 'RJ_ARITH_DOT_' + flag in body
     for operand in ('A', 'B'):
         assert ('RJ_ARITH_DOT_SIGNED_' + operand in body) == ('_I32_' in name)
+    suffix = '_gfx1250' if arch == 'cdna5' and 'DOT4' in name else ''
     for wave in (32, 64):
-        assert f'rj_arith_{name.lower()}_w{wave},' in body
+        assert f'rj_arith_{name.lower()}_w{wave}{suffix},' in body
     assert 'ROCJITSU_TRY_SIMD' not in body
     assert 'amdgpu::execute_v_dot' not in body
 
@@ -1305,7 +1304,6 @@ def test_integer_dot_dispatch(arch, name):
 @pytest.mark.parametrize(
     'arch,encoding',
     [
-        ('cdna5', 'ENC_VOP3P'),
         ('rdna3_5', 'ENC_VOP3P'),
         ('rdna3', 'ENC_VOP3'),
         ('rdna4', 'ENC_VOP3'),
@@ -1393,3 +1391,36 @@ def test_pseudo_scalar_routing_and_semantics(arch):
         for body in bodies:
             assert 'execute_pseudo_scalar' in body
             assert 'transcendental::' not in body and 'amdgpu::execute_v_' not in body
+
+
+@pytest.mark.parametrize('arch', ['cdna3', 'cdna4'])
+def test_cdna_integer_dot_bindings(arch):
+    from amdisa.codegen.execute.rj_arith_vector import (
+        gen_integer_dot,
+        CDNA_INTEGER_DOT_NAMES,
+        ACCUMULATING_INTEGER_DOT_NAMES,
+    )
+
+    for name in sorted(CDNA_INTEGER_DOT_NAMES):
+        body = gen_integer_dot(
+            context(
+                arch,
+                name,
+                ['d'],
+                ['a', 'b', 'c'],
+                enc_name='ENC_VOP3P',
+                opsel_exprs=('low', 'high'),
+            )
+        )
+        assert f'rj_arith_{name.lower()}_w64,' in body
+        assert 'RJ_ARITH_DOT_SIGNED_' not in body
+        assert 'RJ_ARITH_DOT_CLAMP' in body
+    for name in sorted(ACCUMULATING_INTEGER_DOT_NAMES):
+        for encoding in ('ENC_VOP2', 'ENC_VOP3'):
+            body = gen_integer_dot(
+                context(arch, name, ['d'], ['a', 'b'], enc_name=encoding)
+            )
+            api = name.lower().replace('c_i32', '_i32')
+            assert f'rj_arith_{api}_w64,' in body
+            assert '0, d, a, b, d);' in body
+            assert 'inst_.' not in body

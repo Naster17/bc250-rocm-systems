@@ -12,6 +12,7 @@ import pytest
 
 from amdisa.codegen.execute.rj_arith_vector import (
     BINARY32,
+    CDNA5_COMBINED32,
     UNARY32,
     TERNARY32,
     UNMODIFIED_MULTIPLIES,
@@ -69,7 +70,7 @@ def test_binary_bindings_have_both_wave_apis_and_clamp(arch, name):
 
 
 def test_unmigrated_architectures_and_operand_shapes_keep_existing_path():
-    for arch in ('rdna1', 'rdna2', 'rdna3_5', 'cdna4', 'cdna5'):
+    for arch in ('rdna1', 'rdna2', 'rdna3_5', 'cdna1', 'cdna2'):
         assert (
             gen_vector32(context(arch, 'V_AND_B32', ['dst'], ['a', 'b'], False)) is None
         )
@@ -101,7 +102,12 @@ def test_single_vgpr_integer_bindings_match_public_signatures(name, count, kind)
         for source in parameters[4:]:
             assert 'const uint32_t *const *' in source
     sources = [f'src{i}' for i in range(count)]
-    for arch in ('rdna3', 'rdna4'):
+    architectures = (
+        ('cdna5',)
+        if name in CDNA5_COMBINED32
+        else ('cdna4', 'cdna5') if name == 'V_PRNG_B32' else ('rdna3', 'rdna4')
+    )
+    for arch in architectures:
         body = gen_vector32(context(arch, name, ['dst'], sources, True))
         assert f'arith::execute_{kind}32' in body
         assert ('inst_.clamp ? RJ_ARITH_ALU_CLAMP : 0u' in body) == (
@@ -114,7 +120,7 @@ def test_single_vgpr_integer_bindings_match_public_signatures(name, count, kind)
         )
 
 
-@pytest.mark.parametrize('arch', ['rdna3', 'rdna4'])
+@pytest.mark.parametrize('arch', ['rdna3', 'rdna4', 'cdna3', 'cdna4', 'cdna5'])
 def test_generated_rj_arith_bodies_cannot_be_bypassed_by_legacy_simd(arch):
     root = (
         Path(__file__).resolve().parents[3]
@@ -122,7 +128,7 @@ def test_generated_rj_arith_bodies_cannot_be_bypassed_by_legacy_simd(arch):
         / arch
     )
     checked = {'unary': 0, 'binary': 0, 'ternary': 0, 'carry': 0}
-    for path in root.glob('*_exec.cpp'):
+    for path in root.glob('*exec*.cpp'):
         source = path.read_text()
         for match in re.finditer(
             r'void (\w+)::execute(?:_modifier)?_impl\([^)]*\)\s*\{', source
@@ -142,6 +148,19 @@ def test_generated_rj_arith_bodies_cannot_be_bypassed_by_legacy_simd(arch):
             expected = {
                 ''.join(part.title() for part in name.split('_')): name
                 for name in VECTOR32_NAMES | CARRY32_NAMES
+                # Routing and conversions migrate on separate CDNA branches.
+                if not (
+                    arch.startswith('cdna')
+                    and name
+                    in {
+                        'V_MOV_B32',
+                        'V_CNDMASK_B32',
+                        'V_CNDMASK_B16',
+                        'V_CVT_I32_I16',
+                        'V_CVT_U32_U16',
+                        'V_SAT_PK_U8_I16',
+                    }
+                )
             }
             instruction = re.sub(r'Vop[123](?:SdstEnc)?$', '', match[1])
             if instruction not in expected:
@@ -152,7 +171,10 @@ def test_generated_rj_arith_bodies_cannot_be_bypassed_by_legacy_simd(arch):
             for wave in ('w32', 'w64'):
                 assert api + '_' + wave in body, (path.name, match[1], wave)
             assert 'RJ_SIMD' not in body, match[1]
-            assert 'try_execute_' not in body, match[1]
+            # SDWA placement still invokes rj-arith; reject legacy SIMD probes.
+            assert 'try_execute_' not in body.replace(
+                'arith::try_execute_sdwa_integer32', ''
+            ), match[1]
             assert 'amdgpu::execute_v_' not in body, match[1]
             if kind[1] in checked:
                 checked[kind[1]] += 1
@@ -160,7 +182,7 @@ def test_generated_rj_arith_bodies_cannot_be_bypassed_by_legacy_simd(arch):
     assert all(count > 0 for count in checked.values())
 
 
-@pytest.mark.parametrize('arch', ['rdna3', 'rdna4'])
+@pytest.mark.parametrize('arch', ['rdna3', 'rdna4', 'cdna3', 'cdna4', 'cdna5'])
 @pytest.mark.parametrize('name', sorted(CARRY32_NAMES))
 @pytest.mark.parametrize('vop3', [False, True])
 def test_carry_bindings_keep_decoder_commit_and_snapshot_input(arch, name, vop3):
@@ -168,7 +190,8 @@ def test_carry_bindings_keep_decoder_commit_and_snapshot_input(arch, name, vop3)
     dst = ['vdst', 'sdst'] if vop3 else ['vdst']
     src = ['a', 'b', 'cin'] if vop3 and with_carry else ['a', 'b']
     body = gen_carry32(context(arch, name, dst, src, vop3, 'commit_result'))
-    assert f'execute_carry32<{str(with_carry).lower()}>' in body
+    carry_policy = ', false' if arch.startswith('cdna') else ''
+    assert f'execute_carry32<{str(with_carry).lower()}{carry_policy}>' in body
     assert 'rj_arith_' + name.lower() + '_w64' in body
     assert 'input_carry, commit_result' in body
     assert ('inst_.clamp' in body) == vop3
@@ -176,10 +199,10 @@ def test_carry_bindings_keep_decoder_commit_and_snapshot_input(arch, name, vop3)
         assert ('read_wave_mask_scalar(cin, wf)' if vop3 else 'wf.vcc()') in body
     else:
         assert 'input_carry = 0u' in body
-    assert gen_carry32(context('cdna4', name, dst, src, vop3)) is None
+    assert gen_carry32(context('cdna2', name, dst, src, vop3)) is None
 
 
-@pytest.mark.parametrize('arch', ['rdna3', 'rdna4'])
+@pytest.mark.parametrize('arch', ['rdna3', 'rdna4', 'cdna3', 'cdna4', 'cdna5'])
 def test_wide_integer_bindings_and_generated_routing(arch):
     from amdisa.codegen.execute.rj_arith_vector import (
         SHIFT64_NAMES,
@@ -205,7 +228,7 @@ def test_wide_integer_bindings_and_generated_routing(arch):
         assert 'd, a, b, c, commit' in body
         assert (
             gen_wide_integer(
-                context('cdna4', name, ['d', 'sdst'], ['a', 'b', 'c'], True)
+                context('cdna2', name, ['d', 'sdst'], ['a', 'b', 'c'], True)
             )
             is None
         )
@@ -215,7 +238,7 @@ def test_wide_integer_bindings_and_generated_routing(arch):
         / arch
     )
     checked = {'shift': 0, 'mad': 0}
-    for path in root.glob('*_exec.cpp'):
+    for path in root.glob('*exec*.cpp'):
         source = path.read_text()
         for match in re.finditer(
             r'void (\w+)::execute(?:_modifier)?_impl\([^)]*\)\s*\{', source
@@ -243,11 +266,17 @@ def test_wide_integer_bindings_and_generated_routing(arch):
             for wave in ('w32', 'w64'):
                 assert api + '_' + wave in body, (path.name, match[1], wave)
             assert 'RJ_SIMD' not in body, match[1]
-            assert 'try_execute_' not in body, match[1]
+            # SDWA placement still invokes rj-arith; reject legacy SIMD probes.
+            assert 'try_execute_' not in body.replace(
+                'arith::try_execute_sdwa_integer32', ''
+            ), match[1]
             assert 'amdgpu::execute_v_' not in body, match[1]
             if kind[1] in checked:
                 checked[kind[1]] += 1
-    assert checked == {'shift': 3 if arch == 'rdna3' else 4, 'mad': 2}
+    assert checked == {
+        'shift': 8 if arch == 'cdna5' else 4 if arch == 'rdna4' else 3,
+        'mad': 4 if arch == 'cdna5' else 2,
+    }
 
 
 @pytest.mark.parametrize('arch', ['rdna3', 'rdna4'])
@@ -271,7 +300,7 @@ def test_integer16_bindings_own_arithmetic_but_not_dpp_routing(arch):
             for index, selector in enumerate('ABC'):
                 assert (f'RJ_ARITH_ALU_HIGH_{selector}' in body) == (index < count)
             assert 'RJ_ARITH_DPP' not in body
-            assert gen_integer16(context('cdna4', name, ['d'], sources, True)) is None
+            assert gen_integer16(context('cdna2', name, ['d'], sources, True)) is None
             assert (
                 gen_integer16(context(arch, name, ['d'], sources + ['extra'], True))
                 is None
@@ -285,7 +314,7 @@ def test_integer16_bindings_own_arithmetic_but_not_dpp_routing(arch):
         / arch
     )
     counts = {1: 0, 2: 0, 3: 0}
-    for path in root.glob('*_exec.cpp'):
+    for path in root.glob('*exec*.cpp'):
         source = path.read_text()
         for match in re.finditer(
             r'void (\w+)::execute(?:_modifier)?_impl\([^)]*\)\s*\{', source
@@ -299,7 +328,10 @@ def test_integer16_bindings_own_arithmetic_but_not_dpp_routing(arch):
             if count is None:
                 continue
             assert 'RJ_SIMD' not in body, match[1]
-            assert 'try_execute_' not in body, match[1]
+            # SDWA placement still invokes rj-arith; reject legacy SIMD probes.
+            assert 'try_execute_' not in body.replace(
+                'arith::try_execute_sdwa_integer32', ''
+            ), match[1]
             assert 'amdgpu::execute_v_' not in body, match[1]
             counts[int(count[1])] += 1
     assert counts == {1: 8, 2: 2 * len(BINARY16), 3: 2 * len(TERNARY16)}
@@ -322,7 +354,7 @@ def test_widening_integer_keeps_full_word_accumulator_and_destination(arch):
         assert ('RJ_ARITH_ALU_CLAMP' in body) == mad
         assert 'execute_integer16' not in body
         assert (
-            gen_widening_integer(context('cdna4', name, ['d'], sources, True)) is None
+            gen_widening_integer(context('cdna2', name, ['d'], sources, True)) is None
         )
         assert gen_widening_integer(context(arch, name, ['d'], sources, False)) is None
 
@@ -331,6 +363,7 @@ def test_widening_integer_keeps_full_word_accumulator_and_destination(arch):
 def test_packed_integer_selector_mapping_and_compatibility(arch):
     from amdisa.codegen.execute.rj_arith_vector import (
         PACKED_INTEGER_NAMES,
+        CDNA5_PACKED_TERNARY,
         PACKED_INTEGER_TERNARY,
         gen_packed_integer,
     )
@@ -349,6 +382,9 @@ def test_packed_integer_selector_mapping_and_compatibility(arch):
                 op_sel_hi_2_expr='high_c',
             )
         )
+        if name in CDNA5_PACKED_TERNARY:
+            assert body is None
+            continue
         assert 'rj_arith_' + name.lower() + '_w64' in body
         assert '(high & 1) ? 0u : RJ_ARITH_PK_HI_A_LOW' in body
         assert ('high_c ? 0u : RJ_ARITH_PK_HI_C_LOW' in body) == (count == 3)
@@ -360,11 +396,11 @@ def test_packed_integer_selector_mapping_and_compatibility(arch):
 @pytest.mark.parametrize('arch', ['rdna3', 'rdna4'])
 def test_integer_dot_signedness_bits_are_not_negation_or_half_selectors(arch):
     from amdisa.codegen.execute.rj_arith_vector import (
-        INTEGER_DOT_NAMES,
+        MODERN_INTEGER_DOT_NAMES,
         gen_integer_dot,
     )
 
-    for name in INTEGER_DOT_NAMES:
+    for name in MODERN_INTEGER_DOT_NAMES:
         body = gen_integer_dot(
             context(
                 arch,
@@ -384,7 +420,7 @@ def test_integer_dot_signedness_bits_are_not_negation_or_half_selectors(arch):
         assert (
             gen_integer_dot(
                 context(
-                    'cdna4',
+                    'cdna2',
                     name,
                     ['d'],
                     ['a', 'b', 'c'],
@@ -440,7 +476,7 @@ def test_qsad_register_layouts_and_no_legacy_bypass(arch):
         assert ', ' + str(name != 'V_MQSAD_U32_U8').lower() + ');' in body
         assert 'arithmetic_flags()' in body
         assert (
-            gen_wide_integer(context('cdna4', name, ['d'], ['a', 'b', 'c'], True))
+            gen_wide_integer(context('cdna2', name, ['d'], ['a', 'b', 'c'], True))
             is None
         )
         assert (
@@ -461,3 +497,213 @@ def test_qsad_register_layouts_and_no_legacy_bypass(arch):
     for body in bodies:
         assert 'execute_qsad' in body
         assert 'try_execute_' not in body and 'amdgpu::execute_v_' not in body
+
+
+@pytest.mark.parametrize('arch', ['cdna3', 'cdna4', 'cdna5'])
+def test_cdna_integer_aliases_preserve_arithmetic_and_carry_snapshot(arch):
+    from amdisa.codegen.execute.rj_arith_vector import CDNA_INTEGER_ALIASES
+
+    for name, api in CDNA_INTEGER_ALIASES.items():
+        if '_CO_' in name:
+            body = gen_carry32(
+                context(arch, name, ['d', 'sdst'], ['a', 'b', 'cin'], True, 'commit')
+            )
+            assert 'read_wave_mask_scalar(cin, wf)' in body
+            assert 'input_carry, commit' in body
+        elif name.endswith(('U16', 'I16')):
+            from amdisa.codegen.execute.rj_arith_vector import gen_integer16
+
+            src = ['a', 'b', 'c'] if name.startswith('V_MAD_') else ['a', 'b']
+            body = gen_integer16(context(arch, name, ['d'], src, True))
+            if name.startswith('V_MAD_LEGACY_'):
+                assert 'RJ_ARITH_ALU_CLAMP' not in body
+                assert 'RJ_ARITH_ALU_HIGH_C' in body
+            if name == 'V_SUBREV_U16' and arch != 'cdna5':
+                assert 'modifiers, d, b, &a' in body
+        else:
+            src = ['a'] if name.startswith('V_FFB') else ['a', 'b']
+            body = gen_vector32(context(arch, name, ['d'], src, True))
+        assert 'rj_arith_' + api.lower() + '_w64' in body
+        assert 'wf.cu().arithmetic_flags()' in body
+
+
+@pytest.mark.parametrize('arch', ['cdna3', 'cdna4', 'cdna5'])
+def test_cdna_halfword_destination_policy_and_packed_dispatch(arch):
+    from amdisa.codegen.execute.rj_arith_vector import (
+        gen_integer16,
+        gen_packed_integer,
+        gen_widening_integer,
+    )
+
+    body = gen_integer16(context(arch, 'V_MIN_U16', ['d'], ['a', 'b'], True))
+    shape = '2' if arch == 'cdna5' else '2, true'
+    assert f'execute_integer16<{shape}>' in body
+    assert 'RJ_ARITH_ALU_HIGH_D' in body
+    assert 'RJ_ARITH_ALU_HIGH_A' in body and 'RJ_ARITH_ALU_HIGH_B' in body
+    body = gen_packed_integer(
+        context(
+            arch,
+            'V_PK_ADD_U16',
+            ['d'],
+            ['a', 'b'],
+            False,
+            enc_name='ENC_VOP3P',
+            opsel_exprs=('inst_.op_sel', 'inst_.op_sel_hi'),
+        )
+    )
+    assert 'rj_arith_v_pk_add_u16_w64' in body
+    body = gen_widening_integer(
+        context(arch, 'V_MAD_U32_U16', ['d'], ['a', 'b', 'c'], True)
+    )
+    assert 'rj_arith_v_mad_u32_u16_w64' in body
+
+
+@pytest.mark.parametrize('arch', ['cdna4', 'cdna5'])
+def test_byte_shift_reads_full_words_and_selects_only_destination(arch):
+    from amdisa.codegen.execute.rj_arith_vector import gen_integer16
+
+    for name in ('V_ASHR_PK_I8_I32', 'V_ASHR_PK_U8_I32'):
+        body = gen_integer16(context(arch, name, ['d'], ['a', 'b', 'c'], True))
+        zero_high = str(arch == 'cdna4').lower()
+        assert f'execute_integer16<3, {zero_high}, true>' in body
+        assert 'RJ_ARITH_ALU_HIGH_D' in body
+        assert 'RJ_ARITH_ALU_HIGH_A' not in body
+        assert 'RJ_ARITH_ALU_CLAMP' not in body
+
+
+def test_noncarry_mad64_has_no_scalar_result_callback():
+    from amdisa.codegen.execute.rj_arith_vector import gen_wide_integer
+
+    for name in ('V_MAD_NC_U64_U32', 'V_MAD_NC_I64_I32'):
+        body = gen_wide_integer(context('cdna5', name, ['d'], ['a', 'b', 'c'], True))
+        assert 'execute_mad64_nc' in body
+        assert f'rj_arith_{name.lower()}_w32' in body
+        assert 'RJ_ARITH_ALU_CLAMP' in body
+        assert 'read_wave_mask_scalar' not in body
+        assert 'write_wave_mask_scalar' not in body
+        assert (
+            gen_wide_integer(
+                context('cdna5', name, ['d'], ['a', 'b', 'c'], True, 'commit')
+            )
+            is None
+        )
+
+
+@pytest.mark.parametrize('arch', ['cdna3', 'cdna4', 'cdna5'])
+def test_wide_binary_and_shift_add_bindings(arch):
+    from amdisa.codegen.execute.rj_arith_vector import gen_wide_integer, BINARY64_NAMES
+
+    for name in BINARY64_NAMES | {'V_LSHL_ADD_U64'}:
+        shift_add = name == 'V_LSHL_ADD_U64'
+        sources = ['a', 'b', 'c'] if shift_add else ['a', 'b']
+        body = gen_wide_integer(context(arch, name, ['d'], sources, True))
+        assert ('execute_shift_add64' if shift_add else 'execute_binary64') in body
+        assert f'rj_arith_{name.lower()}_w64' in body
+        assert 'RJ_ARITH_ALU_CLAMP' in body
+        assert 'write_wave_mask_scalar' not in body
+
+
+@pytest.mark.parametrize('arch', ['cdna4', 'cdna5'])
+def test_cdna_prng_reuses_unary_bridge(arch):
+    body = gen_vector32(context(arch, 'V_PRNG_B32', ['dst'], ['src'], True))
+    assert 'execute_unary32' in body
+    assert 'rj_arith_v_prng_b32_w32' in body
+    assert 'rj_arith_v_prng_b32_w64' in body
+    assert gen_vector32(context('cdna3', 'V_PRNG_B32', ['dst'], ['src'], True)) is None
+
+
+@pytest.mark.parametrize('arch', ['cdna4', 'cdna5'])
+@pytest.mark.parametrize('bits', [16, 32])
+def test_bitop3_truth_table_and_destination_contract(arch, bits):
+    from amdisa.codegen.execute.rj_arith_vector import gen_bitop3
+
+    body = gen_bitop3(
+        context(arch, f'V_BITOP3_B{bits}', ['dst'], ['a', 'b', 'c'], True)
+    )
+    assert '(inst_.omod << 6) | (inst_.abs << 3) | inst_.neg' in body
+    assert f'rj_arith_v_bitop3_b{bits}_w32' in body
+    assert f'rj_arith_v_bitop3_b{bits}_w64' in body
+    assert ('RJ_ARITH_ALU_HIGH_A' in body) == (arch == 'cdna5' and bits == 16)
+    if bits == 16:
+        assert f'execute_integer16<3, {str(arch == "cdna4").lower()}>' in body
+    else:
+        assert 'execute_ternary32' in body
+
+
+@pytest.mark.parametrize(
+    'name',
+    ['V_MAD_U32', 'V_ADD_MIN_I32', 'V_ADD_MIN_U32', 'V_ADD_MAX_I32', 'V_ADD_MAX_U32'],
+)
+def test_cdna5_combined_integer_bindings(name):
+    body = gen_vector32(context('cdna5', name, ['dst'], ['a', 'b', 'c'], True))
+    assert 'execute_ternary32' in body
+    assert f'rj_arith_{name.lower()}_w32' in body
+    assert f'rj_arith_{name.lower()}_w64' in body
+    for arch in ('cdna3', 'cdna4'):
+        assert gen_vector32(context(arch, name, ['dst'], ['a', 'b', 'c'], True)) is None
+
+
+@pytest.mark.parametrize('op', ['ADD_MIN', 'ADD_MAX', 'MIN3', 'MAX3'])
+@pytest.mark.parametrize('dtype', ['I16', 'U16'])
+def test_cdna5_packed_ternary_bindings(op, dtype):
+    from amdisa.codegen.execute.rj_arith_vector import gen_packed_integer
+
+    name = f'V_PK_{op}_{dtype}'
+    body = gen_packed_integer(
+        context(
+            'cdna5',
+            name,
+            ['dst'],
+            ['a', 'b', 'c'],
+            False,
+            enc_name='ENC_VOP3P',
+            opsel_exprs=('inst_.opsel', 'inst_.opsel_hi'),
+            op_sel_hi_2_expr='inst_.opsel_hi_2',
+        )
+    )
+    assert 'execute_ternary32' in body
+    assert f'rj_arith_{name.lower()}_w32' in body
+    assert f'rj_arith_{name.lower()}_w64' in body
+    assert 'inst_.opsel_hi_2' in body
+    assert 'RJ_ARITH_PK_CLAMP' in body
+    for arch in ('cdna3', 'cdna4'):
+        assert (
+            gen_packed_integer(
+                context(
+                    arch, name, ['dst'], ['a', 'b', 'c'], False, enc_name='ENC_VOP3P'
+                )
+            )
+            is None
+        )
+
+
+@pytest.mark.parametrize('arch', ['cdna3', 'cdna4', 'cdna5'])
+def test_integer_migration_leaves_routing_and_conversions_separate(arch):
+    from amdisa.codegen.execute.rj_arith_vector import (
+        gen_integer16,
+        gen_widening_integer,
+    )
+
+    for name, sources in [
+        ('V_MOV_B32', ['a']),
+        ('V_CNDMASK_B32', ['a', 'b', 'condition']),
+        ('V_CVT_I32_I16', ['a']),
+        ('V_CVT_U32_U16', ['a']),
+        ('V_SAT_PK_U8_I16', ['a']),
+    ]:
+        assert gen_vector32(context(arch, name, ['d'], sources, True)) is None
+    assert gen_integer16(context(arch, 'V_MOV_B16', ['d'], ['a'], True)) is None
+    for name in ['V_CVT_PK_I16_I32', 'V_CVT_PK_U16_U32']:
+        assert (
+            gen_widening_integer(context(arch, name, ['d'], ['a', 'b'], True)) is None
+        )
+
+
+@pytest.mark.parametrize('arch', ['rdna3', 'rdna4', 'cdna3', 'cdna4', 'cdna5'])
+def test_integer_sdwa_destination_placement(arch):
+    for name, sources in [('V_NOT_B32', ['a']), ('V_OR_B32', ['a', 'b'])]:
+        for vop3 in (False, True):
+            body = gen_vector32(context(arch, name, ['d'], sources, vop3))
+            assert ('try_execute_sdwa_integer32' in body) == (
+                arch in ('cdna3', 'cdna4') and not vop3
+            )
