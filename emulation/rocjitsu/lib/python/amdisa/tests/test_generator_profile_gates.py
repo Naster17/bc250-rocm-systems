@@ -910,11 +910,11 @@ def test_generated_scc_accesses_match_mrisa(isa_name, profile_type):
                         f'SCC={body_writes_scc}, MR ISA writes SCC={mrisa_writes_scc}'
                     )
                 if sem.semantic_class == 'scalar_addk':
-                    # RDNA3/4 delegate signed overflow to the corresponding rj-arith
-                    # ADDK API; other architectures still emit the local helper.
+                    # Migrated architectures delegate signed overflow to rj-arith;
+                    # other architectures still emit the local helper.
                     overflow = (
                         f'rj_arith_{inst.name.lower()}('
-                        if isa_name in ('rdna3', 'rdna4')
+                        if isa_name in ('rdna3', 'rdna4', 'cdna3', 'cdna4', 'cdna5')
                         else 'signed_add_overflows'
                     )
                     if overflow not in body:
@@ -4144,9 +4144,10 @@ def test_scalar_f16_source_lowering_uses_numeric_operand_format(arch_name):
         if not numeric_sources:
             assert 'read_scalar_f16_carrier' not in body, name
         if high:
-            if arch_name == 'rdna4':
+            if arch_name in ('rdna4', 'cdna5'):
                 # The rj-arith entry point selects the high half of the carrier.
-                assert 'rj_arith_s_cvt_hi_f32_f16(' in body
+                suffix = '_gfx1250' if arch_name == 'cdna5' else ''
+                assert f'rj_arith_s_cvt_hi_f32_f16{suffix}(' in body
             else:
                 assert '>> 16' in body, name
 
@@ -4393,9 +4394,9 @@ def test_generated_pseudo_scalar_vop3_paths_ignore_exec_and_f16_opsel(
                 bridge = (
                     generated_root.parents[1] / 'shared/rj_arith_float_exec.h'
                 ).read_text()
-                begin = bridge.index('inline void execute_pseudo_scalar(')
-                end = bridge.index('inline uint64_t float32_flags(', begin)
-                adapter = bridge[begin:end]
+                adapter = _generated_function_body(
+                    bridge, 'inline void execute_pseudo_scalar('
+                )
                 assert 'wave.exec()' not in adapter
                 assert 'registers.read_scalar(source)' in adapter
                 assert 'registers.write_scalar(destination, result)' in adapter

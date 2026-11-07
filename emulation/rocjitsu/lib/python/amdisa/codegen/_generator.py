@@ -15649,12 +15649,11 @@ class CodeGenerator:
                     PACKED_INTEGER_NAMES,
                     INTEGER_DOT_NAMES,
                 )
-                from amdisa.codegen.execute.rj_arith_scalar import SCALAR_NAMES
+                from amdisa.codegen.execute.rj_arith_scalar import supports_scalar
 
-                has_rj_arith_scalar = self.isa_spec.arch_name in (
-                    'rdna3',
-                    'rdna4',
-                ) and any(i.name in SCALAR_NAMES for i in all_insts)
+                has_rj_arith_scalar = any(
+                    supports_scalar(self.isa_spec.arch_name, i.name) for i in all_insts
+                )
                 if has_rj_arith_scalar:
                     cpp_includes.append(('rj_arith/rj_arith.h', False))
                 if self.isa_spec.arch_name in ('rdna3', 'rdna4') and any(
