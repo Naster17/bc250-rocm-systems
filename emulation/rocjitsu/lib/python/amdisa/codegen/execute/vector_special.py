@@ -184,6 +184,7 @@ def gen_vector_movrel(
     inactive_uses_bound_ctrl: bool = False,
     use_rj_arith: bool = False,
     is_vop3: bool = False,
+    apply_dpp_source_modifiers: bool = True,
 ) -> str:
     """Generate M0-relative VGPR move bodies."""
     if op not in ('src', 'dst', 'srcdst', 'srcdst2'):
@@ -211,7 +212,7 @@ def gen_vector_movrel(
             supports_dpp8,
             supports_sdwa,
             inactive_uses_bound_ctrl,
-            use_rj_arith and not is_vop3,
+            use_rj_arith and not is_vop3 and apply_dpp_source_modifiers,
         )
         L.append(_move_lanes(dst[0], 'rel_src', use_rj_arith, is_vop3))
         return '\n'.join(L)
@@ -257,7 +258,7 @@ def gen_vector_movrel(
             supports_dpp8,
             supports_sdwa,
             inactive_uses_bound_ctrl,
-            use_rj_arith and not is_vop3,
+            use_rj_arith and not is_vop3 and apply_dpp_source_modifiers,
         )
         L.append(_move_lanes('rel_dst', 'rel_src', use_rj_arith, is_vop3))
         return '\n'.join(L)

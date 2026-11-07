@@ -11,6 +11,7 @@ from rj_arith_headers import public_headers
 import pytest
 
 from amdisa.codegen.execute.rj_arith_vector import (
+    ACCUMULATOR_MOVES,
     BINARY32,
     UNARY32,
     TERNARY32,
@@ -84,7 +85,10 @@ def test_unmigrated_architectures_and_operand_shapes_keep_existing_path():
 
 @pytest.mark.parametrize(
     'name,count,kind',
-    [(name, 1, 'unary') for name in sorted(UNARY32)]
+    [
+        (name, 1, 'unary')
+        for name in sorted(UNARY32 - ACCUMULATOR_MOVES - {'V_SCREEN_PARTITION_4SE_B32'})
+    ]
     + [(name, 2, 'binary') for name in sorted(BINARY32)]
     + [(name, 3, 'ternary') for name in sorted(TERNARY32)],
 )
@@ -145,6 +149,14 @@ def test_generated_rj_arith_bodies_cannot_be_bypassed_by_legacy_simd(arch):
             }
             instruction = re.sub(r'Vop[123](?:SdstEnc)?$', '', match[1])
             if instruction not in expected:
+                continue
+            if expected[instruction] == 'V_ACCVGPR_MOV_B32' or (
+                expected[instruction] == 'V_MOV_B32' and match[1].endswith('Vop1')
+            ):
+                # Moves use a bit-preserving adapter rather than numeric source acquisition.
+                assert 'arith::execute_move32(' in body
+                assert 'amdgpu::execute_v_' not in body
+                assert 'try_execute_' not in body
                 continue
             assert kind is not None, (path.name, match[1])
             mnemonic = expected[instruction]
@@ -271,7 +283,16 @@ def test_integer16_bindings_own_arithmetic_but_not_dpp_routing(arch):
             for index, selector in enumerate('ABC'):
                 assert (f'RJ_ARITH_ALU_HIGH_{selector}' in body) == (index < count)
             assert 'RJ_ARITH_DPP' not in body
-            assert gen_integer16(context('cdna4', name, ['d'], sources, True)) is None
+            unmigrated_archs = (
+                ('cdna3', 'cdna4')
+                if name == 'V_MOV_B16'
+                else ('cdna3', 'cdna4', 'cdna5')
+            )
+            for unmigrated in unmigrated_archs:
+                assert (
+                    gen_integer16(context(unmigrated, name, ['d'], sources, True))
+                    is None
+                )
             assert (
                 gen_integer16(context(arch, name, ['d'], sources + ['extra'], True))
                 is None
@@ -422,6 +443,13 @@ def test_packed_saturation_reads_word_and_writes_selected_half(arch):
         assert 'inst_.abs' not in body and 'inst_.neg' not in body
 
 
+@pytest.mark.parametrize('arch', ['cdna3', 'cdna4', 'cdna5'])
+@pytest.mark.parametrize('name', ['V_CVT_I32_I16', 'V_CVT_U32_U16', 'V_SAT_PK_U8_I16'])
+def test_integer_conversions_remain_outside_routing_migration(arch, name):
+    for vop3 in (False, True):
+        assert gen_vector32(context(arch, name, ['dst'], ['src'], vop3)) is None
+
+
 @pytest.mark.parametrize('arch', ['rdna3', 'rdna4'])
 def test_qsad_register_layouts_and_no_legacy_bypass(arch):
     from amdisa.codegen.execute.rj_arith_vector import QSAD_NAMES, gen_wide_integer
@@ -461,3 +489,10 @@ def test_qsad_register_layouts_and_no_legacy_bypass(arch):
     for body in bodies:
         assert 'execute_qsad' in body
         assert 'try_execute_' not in body and 'amdgpu::execute_v_' not in body
+
+
+@pytest.mark.parametrize('arch', ['rdna3', 'rdna4', 'cdna3', 'cdna4', 'cdna5'])
+def test_vop3_move_source_modifiers_are_rdna_only(arch):
+    body = gen_vector32(context(arch, 'V_MOV_B32', ['dst'], ['a'], True))
+    for modifier in ('RJ_ARITH_ALU_ABS_A', 'RJ_ARITH_ALU_NEG_A'):
+        assert (modifier in body) == arch.startswith('rdna')
