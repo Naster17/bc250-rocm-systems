@@ -114,12 +114,18 @@ int fp64(uint64_t flags, uint32_t exec_mask, uint32_t instruction_flags, uint32_
     return RJ_ARITH_SUCCESS;
   }
 #if defined(RJ_ARITH_HAVE_X86_64_V4)
+  if constexpr (Op == rocjitsu::arith::Fp64::Trunc || Op == rocjitsu::arith::Fp64::Ceil ||
+                Op == rocjitsu::arith::Fp64::Rndne || Op == rocjitsu::arith::Fp64::Floor ||
+                Op == rocjitsu::arith::Fp64::Fract || Op == rocjitsu::arith::Fp64::FrexpMant) {
+    if (rocjitsu::arith::cpu_level_at_least(flags, RJ_ARITH_CPU_X86_64_V4)) {
+      rocjitsu::arith::fp64_x86_64_v4(Op, flags, exec_mask, instruction_flags, d, a, b, c);
+      return RJ_ARITH_SUCCESS;
+    }
+  }
   if constexpr (Op == rocjitsu::arith::Fp64::Fma || Op == rocjitsu::arith::Fp64::Add ||
                 Op == rocjitsu::arith::Fp64::Mul) {
-    if ((flags & RJ_ARITH_FP_ROUND_MASK) &&
-        rocjitsu::arith::cpu_level_at_least(flags, RJ_ARITH_CPU_X86_64_V4)) {
-      rocjitsu::arith::fp64_directed_x86_64_v4(Op, flags, exec_mask, instruction_flags, d, a, b, c,
-                                               Rdna3);
+    if (rocjitsu::arith::cpu_level_at_least(flags, RJ_ARITH_CPU_X86_64_V4)) {
+      rocjitsu::arith::fp64_x86_64_v4(Op, flags, exec_mask, instruction_flags, d, a, b, c, Rdna3);
       return RJ_ARITH_SUCCESS;
     }
   }
@@ -1326,4 +1332,103 @@ int rj_arith_v_frexp_mant_f64_w64(uint64_t flags, uint64_t exec_mask, uint64_t i
   }
   return fp64_wave64<rocjitsu::arith::Fp64::FrexpMant, true>(flags, exec_mask, instruction_flags, d,
                                                              a, nullptr, nullptr);
+}
+
+// Fused A*B+D, retaining the inherited FMA rounding and output policy.
+int rj_arith_v_fmac_f64_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                   uint32_t *const *d, const uint32_t *const *a,
+                                   const uint32_t *const *b, uint32_t *state) {
+  if (instruction_flags & (RJ_ARITH_ALU_ABS_C | RJ_ARITH_ALU_NEG_C)) {
+    return RJ_ARITH_ERROR_INVALID_FLAGS;
+  }
+  // Validation precedes reading the accumulator pointers, including empty EXEC.
+  if (int error = rj_arith_v_fma_f64_w32(flags, 0, instruction_flags, nullptr, nullptr, nullptr,
+                                         nullptr, state)) {
+    return error;
+  }
+  if (!exec_mask) {
+    return RJ_ARITH_SUCCESS;
+  }
+  const uint32_t *accumulator[] = {d[0], d[1]};
+  return rj_arith_v_fma_f64_w32(flags, exec_mask, instruction_flags, d, a, b, accumulator, state);
+}
+
+// Fused A*B+D, retaining the inherited FMA rounding and output policy.
+int rj_arith_v_fmac_f64_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t instruction_flags,
+                                   uint32_t *const *d, const uint32_t *const *a,
+                                   const uint32_t *const *b, uint32_t *state) {
+  if (instruction_flags & (RJ_ARITH_ALU_ABS_C | RJ_ARITH_ALU_NEG_C)) {
+    return RJ_ARITH_ERROR_INVALID_FLAGS;
+  }
+  // Validation precedes reading the accumulator pointers, including empty EXEC.
+  if (int error = rj_arith_v_fma_f64_w64(flags, 0, instruction_flags, nullptr, nullptr, nullptr,
+                                         nullptr, state)) {
+    return error;
+  }
+  if (!exec_mask) {
+    return RJ_ARITH_SUCCESS;
+  }
+  const uint32_t *accumulator[] = {d[0], d[1]};
+  return rj_arith_v_fma_f64_w64(flags, exec_mask, instruction_flags, d, a, b, accumulator, state);
+}
+
+// Fused A*B+D, retaining the inherited FMA rounding and output policy.
+int rj_arith_v_fmac_f64_w32_gfx1250(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                    uint32_t *const *d, const uint32_t *const *a,
+                                    const uint32_t *const *b, uint32_t *state) {
+  if (instruction_flags & (RJ_ARITH_ALU_ABS_C | RJ_ARITH_ALU_NEG_C)) {
+    return RJ_ARITH_ERROR_INVALID_FLAGS;
+  }
+  // Validation precedes reading the accumulator pointers, including empty EXEC.
+  if (int error = rj_arith_v_fma_f64_w32_gfx12(flags, 0, instruction_flags, nullptr, nullptr,
+                                               nullptr, nullptr, state)) {
+    return error;
+  }
+  if (!exec_mask) {
+    return RJ_ARITH_SUCCESS;
+  }
+  const uint32_t *accumulator[] = {d[0], d[1]};
+  return rj_arith_v_fma_f64_w32_gfx12(flags, exec_mask, instruction_flags, d, a, b, accumulator,
+                                      state);
+}
+
+namespace {
+// Expand the uniform literal into the existing split-VGPR FMA representation.
+template <bool Multiply>
+int literal_fma64(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                  uint32_t *const *d, const uint32_t *const *a, const uint32_t *const *b,
+                  uint64_t literal, uint32_t *state) {
+  if (instruction_flags) {
+    return RJ_ARITH_ERROR_INVALID_FLAGS;
+  }
+  if (int error =
+          rj_arith_v_fma_f64_w32_gfx12(flags, 0, 0, nullptr, nullptr, nullptr, nullptr, state)) {
+    return error;
+  }
+  if (!exec_mask) {
+    return RJ_ARITH_SUCCESS;
+  }
+  uint32_t words[2][32];
+  for (int lane = 0; lane < 32; ++lane) {
+    words[0][lane] = uint32_t(literal);
+    words[1][lane] = uint32_t(literal >> 32);
+  }
+  const uint32_t *uniform[] = {words[0], words[1]};
+  return rj_arith_v_fma_f64_w32_gfx12(flags, exec_mask, 0, d, a, Multiply ? uniform : b,
+                                      Multiply ? b : uniform, state);
+}
+} // namespace
+
+// Fused arithmetic with a raw FP64 literal and no instruction modifiers.
+int rj_arith_v_fmamk_f64_w32_gfx1250(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                     uint32_t *const *d, const uint32_t *const *a, uint64_t literal,
+                                     const uint32_t *const *b, uint32_t *state) {
+  return literal_fma64<true>(flags, exec_mask, instruction_flags, d, a, b, literal, state);
+}
+
+// Fused arithmetic with a raw FP64 literal and no instruction modifiers.
+int rj_arith_v_fmaak_f64_w32_gfx1250(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                     uint32_t *const *d, const uint32_t *const *a,
+                                     const uint32_t *const *b, uint64_t literal, uint32_t *state) {
+  return literal_fma64<false>(flags, exec_mask, instruction_flags, d, a, b, literal, state);
 }

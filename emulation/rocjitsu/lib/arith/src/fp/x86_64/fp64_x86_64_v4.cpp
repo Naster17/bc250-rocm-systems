@@ -109,7 +109,25 @@ inline __m512d flush_tiny_products(__m512d value, __m512d x, __m512d y, __m512d 
                                             : value;
 }
 
-// Use embedded rounding for the selected arithmetic operation, with exceptions masked.
+// Normalize finite values to [0.5,1), retaining signs and quieting NaNs.
+__m512d mantissa(__m512d x) {
+  auto original = _mm512_castpd_si512(x);
+  auto magnitude = _mm512_and_si512(original, _mm512_set1_epi64(INT64_MAX));
+  auto tiny = _mm512_cmplt_epi64_mask(magnitude, _mm512_set1_epi64(0x0010000000000000LL));
+  // Scaling only subnormal lanes avoids unnecessary overflow in ordinary lanes.
+  auto normalized = _mm512_mask_mul_pd(x, tiny, x, _mm512_set1_pd(0x1p54));
+  auto bits = _mm512_or_si512(_mm512_and_si512(_mm512_castpd_si512(normalized),
+                                               _mm512_set1_epi64(int64_t(0x800fffffffffffffULL))),
+                              _mm512_set1_epi64(0x3fe0000000000000LL));
+  auto special = _mm512_cmpeq_epi64_mask(magnitude, _mm512_setzero_si512()) |
+                 _mm512_cmpge_epi64_mask(magnitude, _mm512_set1_epi64(0x7ff0000000000000LL));
+  auto nan = _mm512_cmpgt_epi64_mask(magnitude, _mm512_set1_epi64(0x7ff0000000000000LL));
+  original = _mm512_mask_or_epi64(original, nan, original, _mm512_set1_epi64(0x0008000000000000LL));
+  return _mm512_castsi512_pd(_mm512_mask_mov_epi64(bits, special, original));
+}
+
+// Named integral operations have fixed rounding; FRACT's subtraction uses the guest mode.
+// ADD/MUL/FMA likewise use embedded rounding, with host exceptions suppressed.
 template <int Rounding> __m512d arithmetic(Fp64 op, __m512d x, __m512d y, __m512d z) {
   if (op == Fp64::Add) {
     return _mm512_add_round_pd(x, y, Rounding | _MM_FROUND_NO_EXC);
@@ -117,7 +135,29 @@ template <int Rounding> __m512d arithmetic(Fp64 op, __m512d x, __m512d y, __m512
   if (op == Fp64::Mul) {
     return _mm512_mul_round_pd(x, y, Rounding | _MM_FROUND_NO_EXC);
   }
-  return _mm512_fmadd_round_pd(x, y, z, Rounding | _MM_FROUND_NO_EXC);
+  if (op == Fp64::Fma) {
+    return _mm512_fmadd_round_pd(x, y, z, Rounding | _MM_FROUND_NO_EXC);
+  }
+  switch (op) {
+  case Fp64::Trunc:
+    return _mm512_roundscale_pd(x, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
+  case Fp64::Ceil:
+    return _mm512_roundscale_pd(x, _MM_FROUND_TO_POS_INF | _MM_FROUND_NO_EXC);
+  case Fp64::Rndne:
+    return _mm512_roundscale_pd(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+  case Fp64::Floor:
+    return _mm512_roundscale_pd(x, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC);
+  case Fp64::FrexpMant:
+    return mantissa(x);
+  default: {
+    auto integral = _mm512_roundscale_pd(x, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC);
+    auto value = _mm512_sub_round_pd(x, integral, Rounding | _MM_FROUND_NO_EXC);
+    value = _mm512_mask_mov_pd(value, _mm512_cmp_pd_mask(value, _mm512_setzero_pd(), _CMP_EQ_OQ),
+                               _mm512_setzero_pd());
+    auto limit = _mm512_castsi512_pd(_mm512_set1_epi64(0x3fefffffffffffffLL));
+    return _mm512_mask_mov_pd(value, _mm512_cmp_pd_mask(value, limit, _CMP_GT_OQ), limit);
+  }
+  }
 }
 
 // Apply fp64_nan_priority to eight lanes.
@@ -151,10 +191,15 @@ bool evaluate(Fp64 op, uint64_t flags, uint32_t instruction_flags, const uint32_
   __mmask8 nan = 0;
   for (int lane = 0; lane < 32; lane += 8) {
     auto x = input(a, lane, instruction_flags, flush);
-    auto y = input(b, lane, instruction_flags >> 1, flush);
+    auto y = (op == Fp64::Add || op == Fp64::Mul || op == Fp64::Fma)
+                 ? input(b, lane, instruction_flags >> 1, flush)
+                 : _mm512_setzero_pd();
     auto z = op == Fp64::Fma ? input(c, lane, instruction_flags >> 2, flush) : _mm512_setzero_pd();
     __m512d value;
     switch (rounding) {
+    case 0:
+      value = arithmetic<_MM_FROUND_TO_NEAREST_INT>(op, x, y, z);
+      break;
     case 1:
       value = arithmetic<_MM_FROUND_TO_POS_INF>(op, x, y, z);
       break;
@@ -185,14 +230,14 @@ bool evaluate(Fp64 op, uint64_t flags, uint32_t instruction_flags, const uint32_
 
 } // namespace
 
-void fp64_directed_x86_64_v4(Fp64 op, uint64_t flags, uint32_t exec_mask,
-                             uint32_t instruction_flags, uint32_t *const *d,
-                             const uint32_t *const *a, const uint32_t *const *b,
-                             const uint32_t *const *c, bool rdna3) {
+void fp64_x86_64_v4(Fp64 op, uint64_t flags, uint32_t exec_mask, uint32_t instruction_flags,
+                    uint32_t *const *d, const uint32_t *const *a, const uint32_t *const *b,
+                    const uint32_t *const *c, bool rdna3) {
   uint32_t result[2][32];
   // A NaN source or an invalid operation always yields a NaN. Such results are rare, so gfx12
   // re-evaluates with NaN priority only when the host produced one.
-  if (evaluate<false>(op, flags, instruction_flags, a, b, c, result) && !rdna3) {
+  const bool nan = evaluate<false>(op, flags, instruction_flags, a, b, c, result);
+  if (nan && !rdna3 && (op == Fp64::Add || op == Fp64::Mul || op == Fp64::Fma)) {
     evaluate<true>(op, flags, instruction_flags, a, b, c, result);
   }
   // Delay writes until every input has been consumed, including cross-half aliases.

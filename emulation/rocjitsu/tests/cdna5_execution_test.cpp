@@ -5720,6 +5720,34 @@ TEST(Gfx1250ExecutionTest, PkFmaF32SimdMatchesScalarWithPartialExec) {
   }
 }
 
+// DX9 zero-product handling retains EXEC and overlapping source/destination storage.
+TEST(Gfx1250ExecutionTest, FmaDx9ZeroAliasingAndExec) {
+  auto decoder = Decoder::create(ROCJITSU_CODE_ARCH_CDNA5);
+  const auto words = cdna5::build_vop3(
+      cdna5::kVFmaDx9ZeroF32Vop3, {.vdst = 0, .src0 = 256, .src1 = 257, .src2 = 258, .omod = 1});
+  std::unique_ptr<Instruction> instruction(decode_valid(*decoder, words.data()));
+  ASSERT_NE(instruction, nullptr);
+  Gfx1250Sim sim;
+  ASSERT_NO_FATAL_FAILURE(sim.initialize());
+  auto *cu = sim.cu();
+  auto *wf = cu->dispatch_wf(0, 0, kGfx1250ScalarSlots, 32);
+  ASSERT_NE(wf, nullptr);
+  wf->set_exec(0x80000001U);
+  wf->set_mode_raw(0x230U); // IEEE and preserved denormals do not disable DX9/OMOD.
+  wf->set_trapsts(0x80000000U);
+  const auto base = wf->vgpr_alloc().base;
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    cu->write_vgpr(base, lane, 0x80000001U);
+    cu->write_vgpr(base + 1, lane, 0x7f800000U);
+    cu->write_vgpr(base + 2, lane, 0x3f800000U);
+  }
+  ASSERT_TRUE(cu->execute_instruction(instruction.get(), *wf).succeeded());
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    EXPECT_EQ(cu->read_vgpr(base, lane), lane == 0 || lane == 31 ? 0x40000000U : 0x80000001U);
+  }
+  EXPECT_EQ(wf->trapsts(), 0x80000000U);
+}
+
 TEST(Gfx1250ExecutionTest, FmaMixBf16ResultsHonorRoundModeAndClamp) {
   struct TestCase {
     uint32_t src0;
