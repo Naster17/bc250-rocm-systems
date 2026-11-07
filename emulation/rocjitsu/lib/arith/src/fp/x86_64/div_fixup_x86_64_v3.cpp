@@ -117,7 +117,7 @@ public:
 // format-specific special values and output modifiers.
 template <int Width, bool Rdna3>
 __m256i value(__m256i a, __m256i b, __m256i c, uint32_t mode, bool saturate, bool dx10_clamp_off,
-              bool ieee) {
+              bool ieee, unsigned rounding, bool flush_output) {
   using F = rocjitsu::arith::IeeeFormat<Width>;
   using VectorOps = Ops<Width == 64>;
   auto zero = VectorOps::set(0), inf = VectorOps::set(F::infinity),
@@ -125,13 +125,26 @@ __m256i value(__m256i a, __m256i b, __m256i c, uint32_t mode, bool saturate, boo
   auto pm = _mm256_and_si256(a, magmask), bm = _mm256_and_si256(b, magmask),
        cm = _mm256_and_si256(c, magmask);
   auto sign = _mm256_and_si256(_mm256_xor_si256(b, c), signbit);
-  auto overflow = VectorOps::set(F::infinity - (Width == 16 && saturate));
-  auto result =
-      _mm256_or_si256(sign, VectorOps::select(VectorOps::gt(inf, pm), pm, Rdna3 ? inf : overflow));
+  // Guest-directed recovery chooses infinity or max-finite by quotient sign.
+  const auto away = rounding == 1   ? VectorOps::eq(sign, zero)
+                    : rounding == 2 ? VectorOps::inverse(VectorOps::eq(sign, zero))
+                                    : VectorOps::eq(inf, zero);
+  const auto to_infinity = rounding == 0 ? VectorOps::eq(zero, zero) : away;
+  auto recovery = VectorOps::select(to_infinity, inf, VectorOps::set(F::infinity - 1));
+  if constexpr (Width == 16 && !Rdna3) {
+    if (saturate) {
+      recovery = VectorOps::set(F::infinity - 1);
+    }
+  }
+  // FP16 narrowing has its own overflow policy; wider OMOD follows guest rounding.
+  auto overflow = Width == 16 ? VectorOps::set(F::infinity - saturate) : recovery;
+  auto result = _mm256_or_si256(sign, VectorOps::select(VectorOps::gt(inf, pm), pm, recovery));
   if constexpr (Width != 16) {
     auto delta = VectorOps::sub(VectorOps::shr(cm, F::fraction), VectorOps::shr(bm, F::fraction));
     result = VectorOps::select(
-        VectorOps::gt(VectorOps::set(uint64_t(-int64_t(F::bias + F::fraction))), delta), sign,
+        VectorOps::gt(VectorOps::set(uint64_t(-int64_t(F::bias + F::fraction))), delta),
+        _mm256_or_si256(sign,
+                        flush_output ? zero : VectorOps::select(away, VectorOps::set(1), zero)),
         result);
   }
   // Apply zero/infinity cases before NaN propagation; numerator NaNs take precedence over
@@ -188,7 +201,8 @@ __m256i value(__m256i a, __m256i b, __m256i c, uint32_t mode, bool saturate, boo
 }
 
 // Load source values in the vector layout expected by this kernel.
-template <int Width> __m256i load(const uint32_t *const *v, int lane, uint32_t mode, int operand) {
+template <int Width>
+__m256i load(const uint32_t *const *v, int lane, uint32_t mode, int operand, uint64_t flags = 0) {
   using F = rocjitsu::arith::IeeeFormat<Width>;
   using VectorOps = Ops<Width == 64>;
   __m256i result;
@@ -205,6 +219,12 @@ template <int Width> __m256i load(const uint32_t *const *v, int lane, uint32_t m
       result = _mm256_and_si256(_mm256_srl_epi32(result, _mm_cvtsi32_si128(int(shift))),
                                 VectorOps::set(65535));
     }
+  }
+  // Flush denominator/numerator only; the provisional quotient is preserved.
+  if (operand && (flags & RJ_ARITH_FP_FLUSH_INPUT_DENORMALS)) {
+    result = VectorOps::select(
+        VectorOps::eq(VectorOps::band(result, VectorOps::set(F::infinity)), VectorOps::set(0)),
+        VectorOps::band(result, VectorOps::set(F::sign)), result);
   }
   auto keep = VectorOps::set(mode & (RJ_ARITH_ALU_ABS_A << operand) ? F::sign - 1 : ~uint64_t(0));
   auto flip = VectorOps::set(mode & (RJ_ARITH_ALU_NEG_A << operand) ? F::sign : 0);
@@ -223,10 +243,12 @@ void fixup_x86_64_v3(uint32_t exec_mask, uint32_t mode, uint64_t flags, uint32_t
   constexpr int lanes = Width == 64 ? 4 : 8;
   uint32_t staged[2][32];
   for (int lane = 0; lane < 32; lane += lanes) {
-    auto result =
-        value<Width, Rdna3>(load<Width>(a, lane, mode, 0), load<Width>(b, lane, mode, 1),
-                            load<Width>(c, lane, mode, 2), mode, flags & RJ_ARITH_FP16_OVFL,
-                            flags & RJ_ARITH_FP_DX10_CLAMP_OFF, flags & RJ_ARITH_FP_IEEE_MODE);
+    auto result = value<Width, Rdna3>(
+        load<Width>(a, lane, mode, 0, flags), load<Width>(b, lane, mode, 1, flags),
+        load<Width>(c, lane, mode, 2, flags), mode, flags & RJ_ARITH_FP16_OVFL,
+        flags & RJ_ARITH_FP_DX10_CLAMP_OFF, flags & RJ_ARITH_FP_IEEE_MODE,
+        unsigned((flags & RJ_ARITH_FP_ROUND_MASK) >> 24),
+        flags & RJ_ARITH_FP_FLUSH_OUTPUT_DENORMALS);
     if constexpr (Width == 64) {
       auto words = _mm256_permutevar8x32_epi32(result, _mm256_setr_epi32(0, 2, 4, 6, 1, 3, 5, 7));
       _mm_storeu_si128(reinterpret_cast<__m128i *>(staged[0] + lane),
@@ -282,29 +304,34 @@ template void fixup_x86_64_v3<64, true>(uint32_t, uint32_t, uint64_t, uint32_t *
 
 namespace rocjitsu::arith {
 
-// Return the OR of active-lane exception causes, or zero under CLAMP.
+// Return active-lane causes with guest input flushing. CLAMP suppresses causes
+// under the default policy; legacy reports before clamping.
 // Never writes operands. Requires the named CPU features and validated controls.
 template <int Width>
 uint32_t fixup_exceptions_x86_64_v3(uint32_t exec_mask, uint32_t mode, const uint32_t *const *a,
-                                    const uint32_t *const *b, const uint32_t *const *c) {
-  if (mode & RJ_ARITH_ALU_CLAMP) {
+                                    const uint32_t *const *b, const uint32_t *const *c,
+                                    uint64_t flags, bool legacy) {
+  if (!legacy && (mode & RJ_ARITH_ALU_CLAMP)) {
     return 0;
   }
   constexpr int lanes = Width == 64 ? 4 : 8;
   uint32_t causes = 0;
   for (int lane = 0; lane < 32; lane += lanes) {
     causes |= fixup_exception_lanes<Width, Ops<Width == 64>>(
-        load<Width>(a, lane, mode, 0), load<Width>(b, lane, mode, 1), load<Width>(c, lane, mode, 2),
-        mode, exec_mask >> lane);
+        load<Width>(a, lane, mode, 0, flags), load<Width>(b, lane, mode, 1, flags),
+        load<Width>(c, lane, mode, 2, flags), mode, exec_mask >> lane, legacy);
   }
   return causes;
 }
 
 template uint32_t fixup_exceptions_x86_64_v3<16>(uint32_t, uint32_t, const uint32_t *const *,
-                                                 const uint32_t *const *, const uint32_t *const *);
+                                                 const uint32_t *const *, const uint32_t *const *,
+                                                 uint64_t, bool);
 template uint32_t fixup_exceptions_x86_64_v3<32>(uint32_t, uint32_t, const uint32_t *const *,
-                                                 const uint32_t *const *, const uint32_t *const *);
+                                                 const uint32_t *const *, const uint32_t *const *,
+                                                 uint64_t, bool);
 template uint32_t fixup_exceptions_x86_64_v3<64>(uint32_t, uint32_t, const uint32_t *const *,
-                                                 const uint32_t *const *, const uint32_t *const *);
+                                                 const uint32_t *const *, const uint32_t *const *,
+                                                 uint64_t, bool);
 
 } // namespace rocjitsu::arith

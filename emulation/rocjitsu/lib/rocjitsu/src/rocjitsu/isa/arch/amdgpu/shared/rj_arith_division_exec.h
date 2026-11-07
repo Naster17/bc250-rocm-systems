@@ -18,7 +18,8 @@ namespace rocjitsu::amdgpu::arith {
 
 enum class DivisionOperation { Scale, Fmas, Fixup };
 
-// SCALE produces SDST after its vector result, clearing inactive condition bits.
+// SCALE produces SDST after its vector result. CDNA preserves inactive bits from VCC;
+// the RDNA policy clears them.
 // FMAS consumes pre-instruction VCC. FMAS/FIXUP optionally accumulate
 // architectural exception state. All sources are acquired before any destination is written.
 template <unsigned Width, DivisionOperation Op, typename Wave32, typename Wave64,
@@ -26,7 +27,8 @@ template <unsigned Width, DivisionOperation Op, typename Wave32, typename Wave64
 inline void execute_division(Wavefront &wave, Wave32 wave32, Wave64 wave64, uint64_t flags,
                              uint64_t modifiers, const Operand &destination, const Operand &lhs,
                              const Operand &rhs, const Operand &third, bool rdna3,
-                             CommitCondition commit_condition = nullptr) {
+                             CommitCondition commit_condition = nullptr,
+                             bool preserve_inactive_condition = false) {
   const uint64_t exec_mask = wave.exec() & wave.vgpr_write_mask();
   const uint64_t old_condition = wave.vcc();
   flags = Width == 64 ? float16_f64_flags(wave, flags, rdna3) : float32_flags(wave, flags, rdna3);
@@ -41,7 +43,9 @@ inline void execute_division(Wavefront &wave, Wave32 wave32, Wave64 wave64, uint
       if (error != RJ_ARITH_SUCCESS)
         wave.report_instruction_execution_error(InstructionExecutionError::UnsupportedOperandValue);
       else
-        commit_condition(wave.wf_size() == 32 ? narrow_condition : condition);
+        commit_condition(preserve_inactive_condition ? old_condition
+                         : wave.wf_size() == 32      ? narrow_condition
+                                                     : condition);
     }
     return;
   }
@@ -89,7 +93,7 @@ inline void execute_division(Wavefront &wave, Wave32 wave32, Wave64 wave64, uint
   if (!success)
     return;
   if constexpr (Op == DivisionOperation::Scale)
-    commit_condition(condition);
+    commit_condition(condition | (preserve_inactive_condition ? old_condition & ~exec_mask : 0));
   else {
     wave.set_trapsts(wave.trapsts() | causes);
     wave.raise_alu_causes(causes);

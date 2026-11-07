@@ -15621,10 +15621,11 @@ class CodeGenerator:
                             False,
                         )
                     )
-                from amdisa.codegen.execute.rj_arith_division import DIVISION_NAMES
+                from amdisa.codegen.execute.rj_arith_division import supports_division
 
-                if self.isa_spec.arch_name in ('rdna3', 'rdna4') and any(
-                    i.name in DIVISION_NAMES for i in all_insts
+                if any(
+                    supports_division(self.isa_spec.arch_name, i.name)
+                    for i in all_insts
                 ):
                     cpp_includes.append(
                         (
@@ -15684,6 +15685,11 @@ class CodeGenerator:
                     CDNA_FP64_ARITHMETIC,
                     UNARY_F32,
                     UNARY_F64,
+                    CDNA_LEGACY_MATH_F32,
+                    GFX1250_BF16_MATH,
+                    CDNA_MATH_F16,
+                    CDNA_MATH_F32,
+                    CDNA_MATH_F64,
                 )
 
                 if self.isa_spec.arch_name in ('cdna3', 'cdna4') and any(
@@ -15700,14 +15706,22 @@ class CodeGenerator:
                 float_names = (
                     FLOAT_NAMES
                     if self.isa_spec.arch_name in ('rdna3', 'rdna4')
-                    else CDNA_FP32_ARITHMETIC
-                    | CDNA_FP64_ARITHMETIC
-                    | UNARY_F32
-                    | UNARY_F64
-                    | (
-                        {"V_MUL_DX9_ZERO_F32", "V_FMA_DX9_ZERO_F32"}
-                        if self.isa_spec.arch_name == "cdna5"
-                        else {"V_MUL_LEGACY_F32"}
+                    else (
+                        CDNA_FP32_ARITHMETIC
+                        | CDNA_FP64_ARITHMETIC
+                        | UNARY_F32
+                        | UNARY_F64
+                        | CDNA_LEGACY_MATH_F32
+                        | GFX1250_BF16_MATH
+                        | CDNA_MATH_F16
+                        | CDNA_MATH_F32
+                        | CDNA_MATH_F64
+                        | {
+                            'V_MUL_DX9_ZERO_F32',
+                            'V_FMA_DX9_ZERO_F32',
+                            'V_MUL_LEGACY_F32',
+                        }
+                        | {'V_TRIG_PREOP_F64', 'V_TANH_F32'}
                     )
                 )
                 if self.isa_spec.arch_name in (
