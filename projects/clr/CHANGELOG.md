@@ -14,6 +14,7 @@ Full documentation for HIP is available at [rocm.docs.amd.com](https://rocm.docs
 ### Changed
 
 * After `hipFuncSetCacheConfig`, `preferredShmemCarveout` reads back `-1` for `hipFuncCachePreferNone` (was `0`) and `0` for `hipFuncCachePreferL1` (was `1`).
+* Stream completion signals are now placed in device memory by default, as graph signals already are, on GPUs with a large BAR whose ROCr reports a signal-capable device pool, while no profiler tool is attached. Empty kernel dispatches and multi-stream launches get faster, while host reads of completion state get slower: `hipEventQuery`, `hipEventElapsedTime`, and a short kernel launched and synchronized on its own can take a few microseconds longer. Set `DEBUG_CLR_DEV_SIGNALS=0` to keep stream completion signals in host memory.
 
 ## HIP 7.17.0 for ROCm 10.2.0
 
