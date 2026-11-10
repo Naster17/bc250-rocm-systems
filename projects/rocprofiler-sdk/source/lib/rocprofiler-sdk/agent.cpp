@@ -196,6 +196,11 @@ update_agent_runtime_visibility(rocprofiler_agent_t& agent_info)
             {
                 if(itr.empty()) continue;
 
+                // A terminating visibility sentinel selects no further GPU agents.
+                // Preserve selections matched earlier in the list; do not escalate
+                // this supported filter value to a fatal CI diagnostic.
+                if(itr == "-1") break;
+
                 ROCP_TRACE << "Processing " << env_varname << " token: " << itr;
 
                 auto _idx_v = idx++;
