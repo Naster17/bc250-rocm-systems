@@ -99,8 +99,8 @@ prepare_image_transfer(Wavefront &wf, VectorMemState &state, uint32_t resource, 
   const bool packed_signed = transfer_mode == ImageTransferMode::PackedSigned ||
                              transfer_mode == ImageTransferMode::MipPackedSigned;
   if ((!gfx12 && arch != ROCJITSU_CODE_ARCH_RDNA3 && arch != ROCJITSU_CODE_ARCH_RDNA3_5) ||
-      (atomic && !controls.unorm) || (packed && d16) || (mask & ~15u) ||
-      (query && (d16 || (mask & ~3u))) || (gather && std::popcount(mask) != 1))
+      (atomic && !controls.unorm) || (packed && d16) || (mask & ~15u) || (query && d16) ||
+      (gather && std::popcount(mask) != 1))
     return unsupported();
   const uint32_t words = controls.r128 ? 4 : 8;
   const bool dropped = mask == 0;
@@ -192,11 +192,10 @@ prepare_image_transfer(Wavefront &wf, VectorMemState &state, uint32_t resource, 
           arch, dim, type, resource_words[1],
           RegisterAccess(wf).scalar_control_value(sampler + 2).value_or(0));
   if ((volume || compute_feedback) && sampler != ~0u && !query) {
-    if (controls.compare || controls.offset || controls.lod_clamp || controls.gather ||
-        sample_mode == ImageSampleMode::Bias || sample_mode == ImageSampleMode::Derivatives16)
+    if (controls.gather)
       return unsupported();
-    // The transfer owns feedback allocation and status. The ordinary sampler
-    // prepares resident texels without requesting a second status word.
+    // Feedback was already allocated in the vector memory state.
+    // The compute sampler prepares the texels without allocating it again.
     ImageFields fields = controls;
     fields.da = true;
     fields.tfe = fields.lwe = false;
@@ -214,8 +213,8 @@ prepare_image_transfer(Wavefront &wf, VectorMemState &state, uint32_t resource, 
   // Non-sampling 2D-array instructions also address 3D resources: their third
   // coordinate is Z, with the resource's volume layout and depth bounds.
   if ((dim == kImageDim3d && !volume) ||
-      (volume && ((dim != kImageDim3d && dim != kImageDim2dArray) || sampler != ~0u ||
-                  (resource_words[5] & 16))))
+      (volume && ((dim != kImageDim3d && dim != kImageDim2dArray) ||
+                  (!query && (sampler != ~0u || (resource_words[5] & 16))))))
     return unsupported();
   const uint32_t swizzle = descriptor.swizzle_mode;
   uint32_t width = descriptor.width;
@@ -672,6 +671,22 @@ prepare_image_transfer(Wavefront &wf, VectorMemState &state, uint32_t resource, 
         lod = round_sample_fixed8(std::isnan(input) ? 0 : input) + lod_bias;
       } else if (sample_mode == ImageSampleMode::Zero) {
         lod = lod_bias;
+      } else if (query && volume) {
+        const ImageDerivativeQuad quad(lane);
+        std::array<double, 3> dx{}, dy{};
+        zero_footprint = true;
+        for (unsigned axis = 0; axis < dx.size(); ++axis) {
+          const double origin = read(coordinate_offset + axis, quad.origin);
+          dx[axis] = read(coordinate_offset + axis, quad.right()) - origin;
+          dy[axis] = read(coordinate_offset + axis, quad.bottom()) - origin;
+          zero_footprint &=
+              (dx[axis] == 0 || std::isnan(dx[axis])) && (dy[axis] == 0 || std::isnan(dy[axis]));
+        }
+        const std::array<uint32_t, 3> extents{width, height,
+                                              std::max(1u, resource_depth >> first_level)};
+        lod =
+            image_gradient_lod(dx, dy, normalized ? extents : std::array<uint32_t, 3>{1, 1, 1}, 3);
+        lod += lod_bias;
       } else if (needs_gradients) {
         double dxu, dxv, dyu, dyv;
         std::array<int, 4> gradient_rounding{};
@@ -1100,6 +1115,26 @@ prepare_image_transfer(Wavefront &wf, VectorMemState &state, uint32_t resource, 
   } else if (!state.is_load)
     capture_buffer_format_store(wf, state, state.dst_reg_base, packed);
   return util::Result::success();
+}
+
+/// Compute LODs before writing any lane: VDATA may alias quad coordinates,
+/// including coordinates supplied by lanes outside EXEC.
+inline void execute_image_lod(Wavefront &wf, uint32_t resource, uint32_t sampler, uint32_t data,
+                              ImageAddressRegisters coords, ImageFields controls) {
+  VectorMemState state(GLOBAL_MEM);
+  state.is_load = true;
+  ImageLodResults results{};
+  if (prepare_image_transfer(wf, state, resource, data, coords, controls, sampler,
+                             ImageSampleMode::Implicit, &results)
+          .failed())
+    return;
+  RegisterAccess regs(wf);
+  for (uint32_t lane = 0; lane < wf.wf_size(); ++lane) {
+    if (!(state.exec_mask & (uint64_t{1} << lane)))
+      continue;
+    write_image_lod(regs, wf.vgpr_alloc().base + data, lane, controls.dmask, results[lane][0],
+                    results[lane][1]);
+  }
 }
 
 } // namespace rocjitsu::amdgpu

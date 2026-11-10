@@ -16,7 +16,15 @@
 
 namespace rocjitsu::amdgpu {
 
-enum class ImageSampleMode { Implicit, Zero, Explicit, Bias, Derivatives, Derivatives16 };
+enum class ImageSampleMode {
+  Implicit,
+  Zero,
+  Explicit,
+  Bias,
+  Derivatives,
+  Derivatives16,
+  CoarseDerivatives
+};
 
 /// Encoded controls selecting active and derivative coordinates for RDNA sampler operations.
 struct ImageSampleSources {
@@ -31,7 +39,9 @@ struct ImageSampleSources {
   bool clamp;
   bool gather;
   bool lod_warning = false;
-  bool filtered_feedback_candidate = false;
+  bool filtered_feedback_candidate =
+      false; // Full resource with a data result and a supported form.
+  bool texel_fault = false;
 };
 
 /// The top and left edges provide implicit texture gradients for a 2x2 pixel quad.
@@ -47,8 +57,13 @@ public:
   }
 };
 
-constexpr bool linear_image_needs_implicit_lod(unsigned mip_filter, unsigned base, unsigned last) {
-  return mip_filter != 0 && base != last;
+constexpr bool linear_image_needs_implicit_lod(uint32_t sampler_filter, unsigned base,
+                                               unsigned last, bool gather) {
+  const auto mip = (sampler_filter >> 26) & 3u;
+  const auto mag = (sampler_filter >> 20) & 3u;
+  const auto min = (sampler_filter >> 22) & 3u;
+  // Gathers select a mip but always use their fixed XY footprint.
+  return (mip && base != last) || (!gather && min != mag);
 }
 
 /// Unnormalized repeat clamps to the edge and mirror reflects once before clamping.
