@@ -2624,8 +2624,8 @@ class Rdna3Profile(_AmdgpuProfileBase):
     @property
     def gfx11_mimg_fixed_vaddr_words(self) -> dict[str, tuple[int, int]]:
         return {
-            'IMAGE_BVH_INTERSECT_RAY': (11, 8),
-            'IMAGE_BVH64_INTERSECT_RAY': (12, 9),
+            name: (sum(full), sum(packed))
+            for name, (full, packed) in self.gfx11_mimg_nsa_group_words.items()
         }
 
     @property

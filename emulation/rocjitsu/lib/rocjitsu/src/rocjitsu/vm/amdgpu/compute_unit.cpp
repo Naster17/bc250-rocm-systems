@@ -2723,11 +2723,17 @@ ComputeUnitCore::issue_instruction_impl(Wavefront *active, MaybeAsyncWindow<Enab
     uint64_t wave_generation;
   };
   std::optional<ProbeWaitIssue> probe_wait_issue;
+  const Operand *gfx12_atomic_payload = nullptr;
   if (inst->is_memory_wait_producer() && config_.memory_wait_checks_enabled()) {
+    if (wait_state && !wait_state->empty() && config_.arch == ROCJITSU_CODE_ARCH_RDNA4) {
+      RegisterModifiers modifiers;
+      inst->amdgpu_register_modifiers(modifiers);
+      gfx12_atomic_payload = modifiers.image_atomic_data;
+    }
     if (debugger_active)
       probe_wait_issue = ProbeWaitIssue{active->ensure_memory_wait_scoreboard().issue_snapshot(),
                                         active->pc, active->dispatch_generation()};
-    if (!check_prepared_memory)
+    if (!gfx12_atomic_payload && !check_prepared_memory)
       track_memory_wait(*inst, *active);
   }
 
@@ -2841,7 +2847,20 @@ ComputeUnitCore::issue_instruction_impl(Wavefront *active, MaybeAsyncWindow<Enab
   if (check_prepared_memory && wait_state)
     wait_state->check_instruction(*inst, *active);
 
-  if (check_prepared_memory)
+  if (gfx12_atomic_payload) {
+    // Texture bounds select the source lanes during execution. Read the pending inputs
+    // before registering this same atomic's result on its overlapping VDATA operand.
+    if (execution_result.succeeded() && inst->data()) {
+      const auto &data = *inst->data_as<VectorMemState>();
+      const uint32_t first = gfx12_atomic_payload->encoding_value();
+      const uint32_t words = static_cast<uint32_t>(gfx12_atomic_payload->size_bits()) / 32;
+      for (uint32_t word = 0; word < words; ++word) {
+        const auto reg = gfx115_source_vgpr(first + word, active->num_vgprs());
+        wait_state->access({RegClass::VGPR, reg, 1}, data.lane_mask, 0xf, false);
+      }
+    }
+  }
+  if (check_prepared_memory || gfx12_atomic_payload)
     track_memory_wait(*inst, *active);
 
   if (execution_result.failed()) [[unlikely]] {

@@ -465,17 +465,24 @@ void MemoryWaitScoreboard::check_instruction_pending(const Instruction &inst, Wa
   const RegisterAccess registers(wf);
   const bool gfx11 =
       wf.cu().arch() == ROCJITSU_CODE_ARCH_RDNA3 || wf.cu().arch() == ROCJITSU_CODE_ARCH_RDNA3_5;
+  const bool gfx12_image_atomic =
+      wf.cu().arch() == ROCJITSU_CODE_ARCH_RDNA4 && modifiers.image_atomic_data;
   const bool gfx12_sample = wf.cu().arch() == ROCJITSU_CODE_ARCH_RDNA4 &&
                             modifiers.image_sample_sources &&
                             !modifiers.image_sample_sources->query;
-  const bool check_image_result =
-      (gfx11 && modifiers.image_address) || gfx12_sample || modifiers.image_resource_info;
+  const bool check_image_result = (gfx11 && modifiers.image_address) || gfx12_image_atomic ||
+                                  gfx12_sample || modifiers.image_resource_info;
   if (check_image_result) {
     for (int i = 0; i < inst.num_dst_operands(); ++i) {
       const auto &dst = *inst.dst_operand(i);
-      if (dst.decoded_vgpr() &&
-          !registers.destination_register(dst, true, bool(inst.flags() & RESERVES_UNWRITTEN_VGPR)))
-        return;
+      if (dst.decoded_vgpr() && !registers.destination_register(
+                                    dst, true, bool(inst.flags() & RESERVES_UNWRITTEN_VGPR))) {
+        if (!gfx12_image_atomic && !modifiers.bvh_resource)
+          return;
+        // GFX11 BVH and GFX12 atomics read the scalar descriptor before suppressing vector work.
+        lanes = 0;
+        break;
+      }
     }
   }
   // Dropped and unbound texture operations do not acquire coordinate or payload VGPRs.
@@ -485,6 +492,13 @@ void MemoryWaitScoreboard::check_instruction_pending(const Instruction &inst, Wa
     const auto format = registers.scalar_control_value(resource->encoding_value() + 1);
     read_image_inputs =
         shape && format && !image_descriptor_is_unbound(wf.cu().arch(), *format, *shape);
+  }
+  if (const auto *payload = modifiers.image_atomic_data;
+      payload && read_image_inputs && wf.cu().arch() != ROCJITSU_CODE_ARCH_RDNA4) {
+    for (unsigned word = 0; word < static_cast<unsigned>(payload->size_bits()) / 32; ++word) {
+      const auto reg = gfx115_source_vgpr(payload->encoding_value() + word, wf.num_vgprs());
+      access({RegClass::VGPR, reg, 1}, lanes, 0xf, false);
+    }
   }
   if (modifiers.image_sample_sources && read_image_inputs) {
     const auto inputs = image_sample_source_bytes(modifiers, wf, [&](uint32_t selector) {
@@ -549,10 +563,33 @@ void MemoryWaitScoreboard::check_instruction_pending(const Instruction &inst, Wa
       check_coordinate(reg, image_prefix_word_bytes(word, modifiers.image_prefix_low16_words),
                        lanes);
     }
+    uint64_t ray_lanes = lanes;
+    if (const auto resource = modifiers.bvh_resource) {
+      const auto word2 = registers.scalar_control_value(*resource + 2);
+      const auto word3 = registers.scalar_control_value(*resource + 3);
+      const auto last_node = word2 && word3 ? gfx11_bvh_last_node(*word2, *word3) : std::nullopt;
+      if (!last_node)
+        ray_lanes = 0;
+      else {
+        for (uint64_t pending = lanes; pending; pending &= pending - 1) {
+          const uint32_t lane = std::countr_zero(pending);
+          const auto pointer_word = [&](unsigned i) {
+            const auto index = gfx115_source_vgpr(modifiers.image_coordinates[i], wf.num_vgprs());
+            return wf.debug_read_vgpr(index, lane);
+          };
+          uint64_t pointer = pointer_word(0);
+          if (modifiers.bvh_pointer_words == 2)
+            pointer |= uint64_t{pointer_word(1)} << 32;
+          if (!bvh_node_can_load(pointer, *last_node))
+            ray_lanes &= ~(uint64_t{1} << lane);
+        }
+      }
+    }
     for (uint32_t component = 0; component < components; ++component) {
       const uint32_t word = prefix + (modifiers.image_a16 ? component / 2 : component);
       const uint16_t reg = modifiers.image_coordinates[word];
-      check_coordinate(reg, modifiers.image_a16 ? (component % 2 ? 0xc : 0x3) : 0xf, lanes);
+      check_coordinate(reg, modifiers.image_a16 ? (component % 2 ? 0xc : 0x3) : 0xf,
+                       component < modifiers.bvh_pointer_words ? lanes : ray_lanes);
     }
   }
   if (modifiers.exec_all_if_nonzero)
@@ -966,8 +1003,8 @@ void MemoryWaitScoreboard::check_instruction_pending(const Instruction &inst, Wa
         (!write && op == buffer_payload && !reads_buffer_payload) ||
         (!write && op == modifiers.buffer_offset && !read_buffer_offset) ||
         (!write && gfx12_sample && !modifiers.image_reads_address && !op->is_vgpr()) ||
-        op == modifiers.image_address || op == modifiers.image_store_data ||
-        (!pending_scalar_ && !op->is_vgpr()))
+        op == modifiers.image_address || op == modifiers.image_atomic_data ||
+        op == modifiers.image_store_data || (!pending_scalar_ && !op->is_vgpr()))
       return;
     if (op == modifiers.block_data) {
       for (uint32_t word = 0; word < kBlockDwordCount; ++word)
