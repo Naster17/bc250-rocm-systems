@@ -2610,6 +2610,11 @@ void VWmmaBf16f3216x16x32Bf16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
 void VSwmmacF3216x16x64F16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
   auto &cu = wf.cu();
   uint32_t vb = wf.vgpr_alloc().base;
+  if (inst_.opsel & 1u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
   auto dst_off =
       Isa::resolved_vgpr_offset(wf, vdst.opr_type_, vdst.encoding_value_, vdst.vgpr_msb_role());
   if (!dst_off) {
@@ -2634,8 +2639,6 @@ void VSwmmacF3216x16x64F16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t src1_base = vb + *src1_base_off;
-  uint32_t const_acc = amdgpu::ACC_FROM_VGPR;
-  uint32_t s2 = dst;
   auto index_off =
       Isa::resolved_vgpr_offset(wf, src2.opr_type_, src2.encoding_value_, src2.vgpr_msb_role());
   if (!index_off) {
@@ -2644,15 +2647,25 @@ void VSwmmacF3216x16x64F16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t index_base = vb + *index_off;
-  uint32_t index_key = 0u;
-  amdgpu::exec_swmmac_f32<16, 16, 64>(cu, 16, dst, src0_base, src1_base, s2, index_base, 16,
-                                      index_key, amdgpu::extract_f16, amdgpu::extract_f16,
-                                      const_acc);
+  if ((inst_.neg | inst_.neg_hi) & 3u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
+  amdgpu::arith::exec_sparse_matrix<8, 16, 8, 1, 32, 8>(
+      wf, rj_arith_v_swmmac_f32_16x16x64_f16_w32,
+      cu.arithmetic_flags() | (wf.fp16_ovfl() ? RJ_ARITH_FP16_OVFL : 0), 0, dst, src0_base,
+      src1_base, index_base);
 }
 
 void VSwmmacF3216x16x64Bf16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
   auto &cu = wf.cu();
   uint32_t vb = wf.vgpr_alloc().base;
+  if (inst_.opsel & 1u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
   auto dst_off =
       Isa::resolved_vgpr_offset(wf, vdst.opr_type_, vdst.encoding_value_, vdst.vgpr_msb_role());
   if (!dst_off) {
@@ -2677,8 +2690,6 @@ void VSwmmacF3216x16x64Bf16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t src1_base = vb + *src1_base_off;
-  uint32_t const_acc = amdgpu::ACC_FROM_VGPR;
-  uint32_t s2 = dst;
   auto index_off =
       Isa::resolved_vgpr_offset(wf, src2.opr_type_, src2.encoding_value_, src2.vgpr_msb_role());
   if (!index_off) {
@@ -2687,15 +2698,25 @@ void VSwmmacF3216x16x64Bf16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t index_base = vb + *index_off;
-  uint32_t index_key = 0u;
-  amdgpu::exec_swmmac_f32<16, 16, 64>(cu, 16, dst, src0_base, src1_base, s2, index_base, 16,
-                                      index_key, amdgpu::extract_bf16, amdgpu::extract_bf16,
-                                      const_acc);
+  if ((inst_.neg | inst_.neg_hi) & 3u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
+  amdgpu::arith::exec_sparse_matrix<8, 16, 8, 1, 32, 8>(
+      wf, rj_arith_v_swmmac_f32_16x16x64_bf16_w32,
+      cu.arithmetic_flags() | (wf.fp16_ovfl() ? RJ_ARITH_FP16_OVFL : 0), 0, dst, src0_base,
+      src1_base, index_base);
 }
 
 void VSwmmacF1616x16x64F16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
   auto &cu = wf.cu();
   uint32_t vb = wf.vgpr_alloc().base;
+  if (inst_.opsel & 1u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
   auto dst_off =
       Isa::resolved_vgpr_offset(wf, vdst.opr_type_, vdst.encoding_value_, vdst.vgpr_msb_role());
   if (!dst_off) {
@@ -2720,8 +2741,6 @@ void VSwmmacF1616x16x64F16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t src1_base = vb + *src1_base_off;
-  uint32_t const_acc = amdgpu::ACC_FROM_VGPR;
-  uint32_t s2 = dst;
   auto index_off =
       Isa::resolved_vgpr_offset(wf, src2.opr_type_, src2.encoding_value_, src2.vgpr_msb_role());
   if (!index_off) {
@@ -2730,15 +2749,25 @@ void VSwmmacF1616x16x64F16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t index_base = vb + *index_off;
-  uint32_t index_key = 0u;
-  amdgpu::exec_swmmac_f16<16, 16, 64>(cu, 16, dst, src0_base, src1_base, s2, index_base, 16,
-                                      index_key, amdgpu::extract_f16, amdgpu::extract_f16,
-                                      const_acc, amdgpu::WMMA_WAVE32, wf.fp16_ovfl());
+  if ((inst_.neg | inst_.neg_hi) & 3u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
+  amdgpu::arith::exec_sparse_matrix<8, 16, 4, 1, 32, 4>(
+      wf, rj_arith_v_swmmac_f16_16x16x64_f16_w32,
+      cu.arithmetic_flags() | (wf.fp16_ovfl() ? RJ_ARITH_FP16_OVFL : 0), 0, dst, src0_base,
+      src1_base, index_base);
 }
 
 void VSwmmacBf1616x16x64Bf16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
   auto &cu = wf.cu();
   uint32_t vb = wf.vgpr_alloc().base;
+  if (inst_.opsel & 1u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
   auto dst_off =
       Isa::resolved_vgpr_offset(wf, vdst.opr_type_, vdst.encoding_value_, vdst.vgpr_msb_role());
   if (!dst_off) {
@@ -2763,8 +2792,6 @@ void VSwmmacBf1616x16x64Bf16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t src1_base = vb + *src1_base_off;
-  uint32_t const_acc = amdgpu::ACC_FROM_VGPR;
-  uint32_t s2 = dst;
   auto index_off =
       Isa::resolved_vgpr_offset(wf, src2.opr_type_, src2.encoding_value_, src2.vgpr_msb_role());
   if (!index_off) {
@@ -2773,15 +2800,25 @@ void VSwmmacBf1616x16x64Bf16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t index_base = vb + *index_off;
-  uint32_t index_key = 0u;
-  amdgpu::exec_swmmac_bf16<16, 16, 64>(cu, 16, dst, src0_base, src1_base, s2, index_base, 16,
-                                       index_key, amdgpu::extract_bf16, amdgpu::extract_bf16,
-                                       const_acc, amdgpu::WMMA_WAVE32, wf.fp16_ovfl());
+  if ((inst_.neg | inst_.neg_hi) & 3u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
+  amdgpu::arith::exec_sparse_matrix<8, 16, 4, 1, 32, 4>(
+      wf, rj_arith_v_swmmac_bf16_16x16x64_bf16_w32,
+      cu.arithmetic_flags() | (wf.fp16_ovfl() ? RJ_ARITH_FP16_OVFL : 0), 0, dst, src0_base,
+      src1_base, index_base);
 }
 
 void VSwmmacBf16f3216x16x64Bf16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
   auto &cu = wf.cu();
   uint32_t vb = wf.vgpr_alloc().base;
+  if (inst_.opsel & 1u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
   auto dst_off =
       Isa::resolved_vgpr_offset(wf, vdst.opr_type_, vdst.encoding_value_, vdst.vgpr_msb_role());
   if (!dst_off) {
@@ -2806,8 +2843,6 @@ void VSwmmacBf16f3216x16x64Bf16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t src1_base = vb + *src1_base_off;
-  uint32_t const_acc = amdgpu::ACC_FROM_VGPR;
-  uint32_t s2 = dst;
   auto index_off =
       Isa::resolved_vgpr_offset(wf, src2.opr_type_, src2.encoding_value_, src2.vgpr_msb_role());
   if (!index_off) {
@@ -2816,10 +2851,15 @@ void VSwmmacBf16f3216x16x64Bf16Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t index_base = vb + *index_off;
-  uint32_t index_key = 0u;
-  amdgpu::exec_swmmac_bf16f32<16, 16, 64>(cu, 16, dst, src0_base, src1_base, s2, index_base, 16,
-                                          index_key, amdgpu::extract_bf16, amdgpu::extract_bf16,
-                                          const_acc, amdgpu::WMMA_WAVE32, wf.fp16_ovfl());
+  if ((inst_.neg | inst_.neg_hi) & 3u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
+  amdgpu::arith::exec_sparse_matrix<8, 16, 4, 1, 32, 8>(
+      wf, rj_arith_v_swmmac_bf16f32_16x16x64_bf16_w32,
+      cu.arithmetic_flags() | (wf.fp16_ovfl() ? RJ_ARITH_FP16_OVFL : 0), 0, dst, src0_base,
+      src1_base, index_base);
 }
 
 void VWmmaF3216x16x64Fp8Fp8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
@@ -3262,6 +3302,11 @@ void VWmmaI3216x16x64Iu8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
 void VSwmmacF3216x16x128Fp8Fp8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
   auto &cu = wf.cu();
   uint32_t vb = wf.vgpr_alloc().base;
+  if (inst_.opsel & 1u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
   auto dst_off =
       Isa::resolved_vgpr_offset(wf, vdst.opr_type_, vdst.encoding_value_, vdst.vgpr_msb_role());
   if (!dst_off) {
@@ -3286,8 +3331,6 @@ void VSwmmacF3216x16x128Fp8Fp8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t src1_base = vb + *src1_base_off;
-  uint32_t const_acc = amdgpu::ACC_FROM_VGPR;
-  uint32_t s2 = dst;
   auto index_off =
       Isa::resolved_vgpr_offset(wf, src2.opr_type_, src2.encoding_value_, src2.vgpr_msb_role());
   if (!index_off) {
@@ -3296,15 +3339,20 @@ void VSwmmacF3216x16x128Fp8Fp8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t index_base = vb + *index_off;
-  uint32_t index_key = 0u;
-  amdgpu::exec_swmmac_f32<16, 16, 128>(cu, 8, dst, src0_base, src1_base, s2, index_base, 32,
-                                       index_key, amdgpu::extract_fp8, amdgpu::extract_fp8,
-                                       const_acc);
+  amdgpu::arith::exec_sparse_matrix<8, 16, 8, 2, 32, 8>(
+      wf, rj_arith_v_swmmac_f32_16x16x128_fp8_fp8_w32,
+      cu.arithmetic_flags() | (wf.fp16_ovfl() ? RJ_ARITH_FP16_OVFL : 0), 0, dst, src0_base,
+      src1_base, index_base);
 }
 
 void VSwmmacF3216x16x128Fp8Bf8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
   auto &cu = wf.cu();
   uint32_t vb = wf.vgpr_alloc().base;
+  if (inst_.opsel & 1u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
   auto dst_off =
       Isa::resolved_vgpr_offset(wf, vdst.opr_type_, vdst.encoding_value_, vdst.vgpr_msb_role());
   if (!dst_off) {
@@ -3329,8 +3377,6 @@ void VSwmmacF3216x16x128Fp8Bf8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t src1_base = vb + *src1_base_off;
-  uint32_t const_acc = amdgpu::ACC_FROM_VGPR;
-  uint32_t s2 = dst;
   auto index_off =
       Isa::resolved_vgpr_offset(wf, src2.opr_type_, src2.encoding_value_, src2.vgpr_msb_role());
   if (!index_off) {
@@ -3339,15 +3385,20 @@ void VSwmmacF3216x16x128Fp8Bf8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t index_base = vb + *index_off;
-  uint32_t index_key = 0u;
-  amdgpu::exec_swmmac_f32<16, 16, 128>(cu, 8, dst, src0_base, src1_base, s2, index_base, 32,
-                                       index_key, amdgpu::extract_fp8, amdgpu::extract_bf8,
-                                       const_acc);
+  amdgpu::arith::exec_sparse_matrix<8, 16, 8, 2, 32, 8>(
+      wf, rj_arith_v_swmmac_f32_16x16x128_fp8_bf8_w32,
+      cu.arithmetic_flags() | (wf.fp16_ovfl() ? RJ_ARITH_FP16_OVFL : 0), 0, dst, src0_base,
+      src1_base, index_base);
 }
 
 void VSwmmacF3216x16x128Bf8Fp8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
   auto &cu = wf.cu();
   uint32_t vb = wf.vgpr_alloc().base;
+  if (inst_.opsel & 1u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
   auto dst_off =
       Isa::resolved_vgpr_offset(wf, vdst.opr_type_, vdst.encoding_value_, vdst.vgpr_msb_role());
   if (!dst_off) {
@@ -3372,8 +3423,6 @@ void VSwmmacF3216x16x128Bf8Fp8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t src1_base = vb + *src1_base_off;
-  uint32_t const_acc = amdgpu::ACC_FROM_VGPR;
-  uint32_t s2 = dst;
   auto index_off =
       Isa::resolved_vgpr_offset(wf, src2.opr_type_, src2.encoding_value_, src2.vgpr_msb_role());
   if (!index_off) {
@@ -3382,15 +3431,20 @@ void VSwmmacF3216x16x128Bf8Fp8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t index_base = vb + *index_off;
-  uint32_t index_key = 0u;
-  amdgpu::exec_swmmac_f32<16, 16, 128>(cu, 8, dst, src0_base, src1_base, s2, index_base, 32,
-                                       index_key, amdgpu::extract_bf8, amdgpu::extract_fp8,
-                                       const_acc);
+  amdgpu::arith::exec_sparse_matrix<8, 16, 8, 2, 32, 8>(
+      wf, rj_arith_v_swmmac_f32_16x16x128_bf8_fp8_w32,
+      cu.arithmetic_flags() | (wf.fp16_ovfl() ? RJ_ARITH_FP16_OVFL : 0), 0, dst, src0_base,
+      src1_base, index_base);
 }
 
 void VSwmmacF3216x16x128Bf8Bf8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
   auto &cu = wf.cu();
   uint32_t vb = wf.vgpr_alloc().base;
+  if (inst_.opsel & 1u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
   auto dst_off =
       Isa::resolved_vgpr_offset(wf, vdst.opr_type_, vdst.encoding_value_, vdst.vgpr_msb_role());
   if (!dst_off) {
@@ -3415,8 +3469,6 @@ void VSwmmacF3216x16x128Bf8Bf8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t src1_base = vb + *src1_base_off;
-  uint32_t const_acc = amdgpu::ACC_FROM_VGPR;
-  uint32_t s2 = dst;
   auto index_off =
       Isa::resolved_vgpr_offset(wf, src2.opr_type_, src2.encoding_value_, src2.vgpr_msb_role());
   if (!index_off) {
@@ -3425,15 +3477,20 @@ void VSwmmacF3216x16x128Bf8Bf8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t index_base = vb + *index_off;
-  uint32_t index_key = 0u;
-  amdgpu::exec_swmmac_f32<16, 16, 128>(cu, 8, dst, src0_base, src1_base, s2, index_base, 32,
-                                       index_key, amdgpu::extract_bf8, amdgpu::extract_bf8,
-                                       const_acc);
+  amdgpu::arith::exec_sparse_matrix<8, 16, 8, 2, 32, 8>(
+      wf, rj_arith_v_swmmac_f32_16x16x128_bf8_bf8_w32,
+      cu.arithmetic_flags() | (wf.fp16_ovfl() ? RJ_ARITH_FP16_OVFL : 0), 0, dst, src0_base,
+      src1_base, index_base);
 }
 
 void VSwmmacF1616x16x128Fp8Fp8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
   auto &cu = wf.cu();
   uint32_t vb = wf.vgpr_alloc().base;
+  if (inst_.opsel & 1u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
   auto dst_off =
       Isa::resolved_vgpr_offset(wf, vdst.opr_type_, vdst.encoding_value_, vdst.vgpr_msb_role());
   if (!dst_off) {
@@ -3458,8 +3515,6 @@ void VSwmmacF1616x16x128Fp8Fp8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t src1_base = vb + *src1_base_off;
-  uint32_t const_acc = amdgpu::ACC_FROM_VGPR;
-  uint32_t s2 = dst;
   auto index_off =
       Isa::resolved_vgpr_offset(wf, src2.opr_type_, src2.encoding_value_, src2.vgpr_msb_role());
   if (!index_off) {
@@ -3468,15 +3523,20 @@ void VSwmmacF1616x16x128Fp8Fp8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t index_base = vb + *index_off;
-  uint32_t index_key = 0u;
-  amdgpu::exec_swmmac_f16<16, 16, 128>(cu, 8, dst, src0_base, src1_base, s2, index_base, 32,
-                                       index_key, amdgpu::extract_fp8, amdgpu::extract_fp8,
-                                       const_acc, amdgpu::WMMA_WAVE32, wf.fp16_ovfl());
+  amdgpu::arith::exec_sparse_matrix<8, 16, 4, 2, 32, 4>(
+      wf, rj_arith_v_swmmac_f16_16x16x128_fp8_fp8_w32,
+      cu.arithmetic_flags() | (wf.fp16_ovfl() ? RJ_ARITH_FP16_OVFL : 0), 0, dst, src0_base,
+      src1_base, index_base);
 }
 
 void VSwmmacF1616x16x128Fp8Bf8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
   auto &cu = wf.cu();
   uint32_t vb = wf.vgpr_alloc().base;
+  if (inst_.opsel & 1u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
   auto dst_off =
       Isa::resolved_vgpr_offset(wf, vdst.opr_type_, vdst.encoding_value_, vdst.vgpr_msb_role());
   if (!dst_off) {
@@ -3501,8 +3561,6 @@ void VSwmmacF1616x16x128Fp8Bf8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t src1_base = vb + *src1_base_off;
-  uint32_t const_acc = amdgpu::ACC_FROM_VGPR;
-  uint32_t s2 = dst;
   auto index_off =
       Isa::resolved_vgpr_offset(wf, src2.opr_type_, src2.encoding_value_, src2.vgpr_msb_role());
   if (!index_off) {
@@ -3511,15 +3569,20 @@ void VSwmmacF1616x16x128Fp8Bf8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t index_base = vb + *index_off;
-  uint32_t index_key = 0u;
-  amdgpu::exec_swmmac_f16<16, 16, 128>(cu, 8, dst, src0_base, src1_base, s2, index_base, 32,
-                                       index_key, amdgpu::extract_fp8, amdgpu::extract_bf8,
-                                       const_acc, amdgpu::WMMA_WAVE32, wf.fp16_ovfl());
+  amdgpu::arith::exec_sparse_matrix<8, 16, 4, 2, 32, 4>(
+      wf, rj_arith_v_swmmac_f16_16x16x128_fp8_bf8_w32,
+      cu.arithmetic_flags() | (wf.fp16_ovfl() ? RJ_ARITH_FP16_OVFL : 0), 0, dst, src0_base,
+      src1_base, index_base);
 }
 
 void VSwmmacF1616x16x128Bf8Fp8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
   auto &cu = wf.cu();
   uint32_t vb = wf.vgpr_alloc().base;
+  if (inst_.opsel & 1u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
   auto dst_off =
       Isa::resolved_vgpr_offset(wf, vdst.opr_type_, vdst.encoding_value_, vdst.vgpr_msb_role());
   if (!dst_off) {
@@ -3544,8 +3607,6 @@ void VSwmmacF1616x16x128Bf8Fp8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t src1_base = vb + *src1_base_off;
-  uint32_t const_acc = amdgpu::ACC_FROM_VGPR;
-  uint32_t s2 = dst;
   auto index_off =
       Isa::resolved_vgpr_offset(wf, src2.opr_type_, src2.encoding_value_, src2.vgpr_msb_role());
   if (!index_off) {
@@ -3554,15 +3615,20 @@ void VSwmmacF1616x16x128Bf8Fp8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t index_base = vb + *index_off;
-  uint32_t index_key = 0u;
-  amdgpu::exec_swmmac_f16<16, 16, 128>(cu, 8, dst, src0_base, src1_base, s2, index_base, 32,
-                                       index_key, amdgpu::extract_bf8, amdgpu::extract_fp8,
-                                       const_acc, amdgpu::WMMA_WAVE32, wf.fp16_ovfl());
+  amdgpu::arith::exec_sparse_matrix<8, 16, 4, 2, 32, 4>(
+      wf, rj_arith_v_swmmac_f16_16x16x128_bf8_fp8_w32,
+      cu.arithmetic_flags() | (wf.fp16_ovfl() ? RJ_ARITH_FP16_OVFL : 0), 0, dst, src0_base,
+      src1_base, index_base);
 }
 
 void VSwmmacF1616x16x128Bf8Bf8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
   auto &cu = wf.cu();
   uint32_t vb = wf.vgpr_alloc().base;
+  if (inst_.opsel & 1u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
   auto dst_off =
       Isa::resolved_vgpr_offset(wf, vdst.opr_type_, vdst.encoding_value_, vdst.vgpr_msb_role());
   if (!dst_off) {
@@ -3587,8 +3653,6 @@ void VSwmmacF1616x16x128Bf8Bf8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t src1_base = vb + *src1_base_off;
-  uint32_t const_acc = amdgpu::ACC_FROM_VGPR;
-  uint32_t s2 = dst;
   auto index_off =
       Isa::resolved_vgpr_offset(wf, src2.opr_type_, src2.encoding_value_, src2.vgpr_msb_role());
   if (!index_off) {
@@ -3597,15 +3661,20 @@ void VSwmmacF1616x16x128Bf8Bf8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t index_base = vb + *index_off;
-  uint32_t index_key = 0u;
-  amdgpu::exec_swmmac_f16<16, 16, 128>(cu, 8, dst, src0_base, src1_base, s2, index_base, 32,
-                                       index_key, amdgpu::extract_bf8, amdgpu::extract_bf8,
-                                       const_acc, amdgpu::WMMA_WAVE32, wf.fp16_ovfl());
+  amdgpu::arith::exec_sparse_matrix<8, 16, 4, 2, 32, 4>(
+      wf, rj_arith_v_swmmac_f16_16x16x128_bf8_bf8_w32,
+      cu.arithmetic_flags() | (wf.fp16_ovfl() ? RJ_ARITH_FP16_OVFL : 0), 0, dst, src0_base,
+      src1_base, index_base);
 }
 
 void VSwmmacI3216x16x128Iu8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
   auto &cu = wf.cu();
   uint32_t vb = wf.vgpr_alloc().base;
+  if (inst_.opsel & 1u) {
+    wf.report_instruction_execution_error(
+        amdgpu::InstructionExecutionError::UnsupportedOperandValue);
+    return;
+  }
   auto dst_off =
       Isa::resolved_vgpr_offset(wf, vdst.opr_type_, vdst.encoding_value_, vdst.vgpr_msb_role());
   if (!dst_off) {
@@ -3630,8 +3699,6 @@ void VSwmmacI3216x16x128Iu8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t src1_base = vb + *src1_base_off;
-  uint32_t const_acc = amdgpu::ACC_FROM_VGPR;
-  uint32_t s2 = dst;
   auto index_off =
       Isa::resolved_vgpr_offset(wf, src2.opr_type_, src2.encoding_value_, src2.vgpr_msb_role());
   if (!index_off) {
@@ -3640,17 +3707,12 @@ void VSwmmacI3216x16x128Iu8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
     return;
   }
   uint32_t index_base = vb + *index_off;
-  uint32_t index_key = 0u;
-  auto extract_a = [&](auto &cu, uint32_t base, const amdgpu::InputLoc &loc) {
-    return (inst_.neg & 0x1u) ? amdgpu::extract_i8(cu, base, loc)
-                              : amdgpu::extract_u8(cu, base, loc);
-  };
-  auto extract_b = [&](auto &cu, uint32_t base, const amdgpu::InputLoc &loc) {
-    return (inst_.neg & 0x2u) ? amdgpu::extract_i8(cu, base, loc)
-                              : amdgpu::extract_u8(cu, base, loc);
-  };
-  amdgpu::exec_swmmac_i32<16, 16, 128>(cu, 8, dst, src0_base, src1_base, s2, index_base, 32,
-                                       index_key, extract_a, extract_b, inst_.clamp, const_acc);
+  uint64_t controls = inst_.neg & 3;
+  if (inst_.clamp)
+    controls |= RJ_ARITH_WMMA_CLAMP;
+  amdgpu::arith::exec_sparse_matrix<8, 16, 8, 2, 32>(wf, rj_arith_v_swmmac_i32_16x16x128_iu8_w32,
+                                                     cu.arithmetic_flags(), controls, dst,
+                                                     src0_base, src1_base, index_base);
 }
 
 void VWmmaF3216x16x128Fp8Fp8Vop3p::execute_impl(amdgpu::Wavefront &wf) {
