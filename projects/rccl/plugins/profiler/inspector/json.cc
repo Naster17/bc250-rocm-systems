@@ -1,10 +1,12 @@
 #include "json.h"
 #include <assert.h>
+#include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 const char* jsonErrorString(jsonResult_t res) {
   switch (res) {
@@ -40,6 +42,32 @@ typedef struct jsonFileOutput {
   pthread_mutex_t mutex;
 } jsonFileOutput;
 
+// RCCL: inspector output often lands in a directory shared with other local
+// users (the plugin's README suggests /var/lib/node_exporter/...), so creating
+// these files needs two properties fopen() does not give us:
+//
+//   - O_NOFOLLOW, so a symlink planted at the output path is refused rather
+//     than followed onto a file of the attacker's choosing;
+//   - an explicit 0644 creation mode narrowed by umask, so the file is never
+//     group- or world-writable.
+//
+// Both inspector writers go through here. Do not reintroduce a chmod() on these
+// paths: it would re-widen the mode and, being path-based, would follow a
+// symlink swapped in after the open.
+FILE* jsonOpenOutputFile(const char* outfile, bool append) {
+  int flags = O_WRONLY | O_CREAT | O_NOFOLLOW | (append ? O_APPEND : O_TRUNC);
+  int fd = open(outfile, flags, 0644);
+  if (fd < 0) {
+    return NULL;
+  }
+  FILE* fp = fdopen(fd, append ? "a" : "w");
+  if (fp == NULL) {
+    close(fd);
+    return NULL;
+  }
+  return fp;
+}
+
 jsonResult_t jsonInitFileOutput(jsonFileOutput** jfo, const char* outfile) {
   jsonFileOutput* new_jfo = (jsonFileOutput*)malloc(sizeof(jsonFileOutput));
   if (new_jfo == NULL) {
@@ -53,7 +81,7 @@ jsonResult_t jsonInitFileOutput(jsonFileOutput** jfo, const char* outfile) {
   new_jfo->states = NULL;
   new_jfo->state_cap = 0;
   new_jfo->state_n = 0;
-  new_jfo->fp = fopen(outfile, "w");
+  new_jfo->fp = jsonOpenOutputFile(outfile, /*append=*/false);
   if (new_jfo->fp == NULL) {
     free(new_jfo);
     *jfo = 0;

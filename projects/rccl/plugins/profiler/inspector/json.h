@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
 
 typedef enum {
   JSON_NONE, // A pseudo-state meaning that the document is empty
@@ -32,6 +33,12 @@ typedef struct jsonFileOutput jsonFileOutput;
 jsonResult_t jsonLockOutput(jsonFileOutput *jfo);
 
 jsonResult_t jsonUnlockOutput(jsonFileOutput *jfo);
+
+// Create/open an inspector output file safely: refuses to follow a symlink at
+// `outfile`, and creates with mode 0644 narrowed by umask. Returns NULL on
+// failure (errno set; ELOOP when the path is a symlink). Shared by the JSON and
+// Prometheus writers -- see the comment on the definition in json.cc.
+FILE *jsonOpenOutputFile(const char *outfile, bool append);
 
 jsonResult_t jsonInitFileOutput(jsonFileOutput **jfo,
                                 const char *outfile);
