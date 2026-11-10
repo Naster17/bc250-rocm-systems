@@ -49,6 +49,13 @@ public:
                                           const amdgpu::WaitFields &fields) = 0;
 };
 
+/// Optional rollback for consumers that track outstanding routed memory issues.
+class AmdgpuMemoryCancellationObserver {
+public:
+  virtual ~AmdgpuMemoryCancellationObserver() = default;
+  virtual void onAmdgpuMemoryAccessCancelled(const Instruction &inst, amdgpu::Wavefront &wf) = 0;
+};
+
 /// Observes conditional image returns after translation succeeds, before shader execution resumes.
 class AmdgpuImageFeedbackObserver {
 public:
