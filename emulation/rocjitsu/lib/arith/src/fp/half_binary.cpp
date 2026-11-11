@@ -265,9 +265,15 @@ template <rocjitsu::arith::Binary Op, bool Packed, bool GuestDenormals, bool Rdn
         value = x * y;
       }
       if constexpr (Op == rocjitsu::arith::Binary::MinLegacy ||
-                    Op == rocjitsu::arith::Binary::MaxLegacy) {
-        value = rocjitsu::arith::minmax_rdna3<Op == rocjitsu::arith::Binary::MaxLegacy>(
-            x, y, flags & RJ_ARITH_FP_IEEE_MODE);
+                    Op == rocjitsu::arith::Binary::MaxLegacy ||
+                    Op == rocjitsu::arith::Binary::MinLegacyCdna ||
+                    Op == rocjitsu::arith::Binary::MaxLegacyCdna) {
+        constexpr bool maximum = Op == rocjitsu::arith::Binary::MaxLegacy ||
+                                 Op == rocjitsu::arith::Binary::MaxLegacyCdna;
+        constexpr bool first_nan = Op != rocjitsu::arith::Binary::MinLegacyCdna &&
+                                   Op != rocjitsu::arith::Binary::MaxLegacyCdna;
+        value =
+            rocjitsu::arith::minmax_legacy<maximum, first_nan>(x, y, flags & RJ_ARITH_FP_IEEE_MODE);
       }
       if constexpr (Op == rocjitsu::arith::Binary::MinNum) {
         value = rocjitsu::arith::minmax<false, false>(x, y);
@@ -409,6 +415,15 @@ int half_binary(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags, 
   }
   const bool preserve_input_snan =
       Packed && Rdna3 && compatibility && !(flags & RJ_ARITH_FP_IEEE_MODE);
+#if defined(RJ_ARITH_HAVE_X86_64_V4)
+  if constexpr (rocjitsu::arith::is_selection(Op)) {
+    if (rocjitsu::arith::cpu_level_at_least(flags, RJ_ARITH_CPU_X86_64_V4)) {
+      rocjitsu::arith::selection_f16_x86_64_v4(Op, Packed, flags, exec_mask,
+                                               uint32_t(instruction_flags), d[0], a[0], b[0]);
+      return RJ_ARITH_SUCCESS;
+    }
+  }
+#endif
 #if defined(RJ_ARITH_HAVE_X86_64_V3)
   if (rocjitsu::arith::cpu_level_at_least(flags, RJ_ARITH_CPU_X86_64_V3)) {
     rocjitsu::arith::half_binary_x86_64_v3<Op, Packed>(
@@ -1380,4 +1395,132 @@ int rj_arith_v_pk_mul_f16_w64(uint64_t flags, uint64_t exec_mask, uint64_t instr
   }
   return half_binary_wave64<rocjitsu::arith::Binary::Mul, true, true>(
       flags, exec_mask, instruction_flags, d, a, b, compatibility);
+}
+
+// Select FP16 operands with the inherited CDNA two-NaN and signaling-priority rules.
+int rj_arith_v_min_f16_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                  uint32_t *const *d, const uint32_t *const *a,
+                                  const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  flags = rocjitsu::arith::resolve_compatibility(
+      flags, RJ_ARITH_SEMANTICS_BIT_EXACT_EMPIRICAL_NO_FP_STATUS);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (rocjitsu::arith::reports_fp_status(flags)) {
+    return RJ_ARITH_ERROR_UNSUPPORTED_FP_STATUS;
+  }
+  return half_binary<rocjitsu::arith::Binary::MinLegacyCdna, false, true>(
+      flags, exec_mask, instruction_flags, d, a, b);
+}
+
+// Select FP16 operands with the inherited CDNA two-NaN and signaling-priority rules.
+int rj_arith_v_min_f16_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t instruction_flags,
+                                  uint32_t *const *d, const uint32_t *const *a,
+                                  const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  flags = rocjitsu::arith::resolve_compatibility(
+      flags, RJ_ARITH_SEMANTICS_BIT_EXACT_EMPIRICAL_NO_FP_STATUS);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (rocjitsu::arith::reports_fp_status(flags)) {
+    return RJ_ARITH_ERROR_UNSUPPORTED_FP_STATUS;
+  }
+  return half_binary_wave64<rocjitsu::arith::Binary::MinLegacyCdna, false, true>(
+      flags, exec_mask, instruction_flags, d, a, b);
+}
+
+// Select FP16 operands with the inherited CDNA two-NaN and signaling-priority rules.
+int rj_arith_v_max_f16_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                  uint32_t *const *d, const uint32_t *const *a,
+                                  const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  flags = rocjitsu::arith::resolve_compatibility(
+      flags, RJ_ARITH_SEMANTICS_BIT_EXACT_EMPIRICAL_NO_FP_STATUS);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (rocjitsu::arith::reports_fp_status(flags)) {
+    return RJ_ARITH_ERROR_UNSUPPORTED_FP_STATUS;
+  }
+  return half_binary<rocjitsu::arith::Binary::MaxLegacyCdna, false, true>(
+      flags, exec_mask, instruction_flags, d, a, b);
+}
+
+// Select FP16 operands with the inherited CDNA two-NaN and signaling-priority rules.
+int rj_arith_v_max_f16_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t instruction_flags,
+                                  uint32_t *const *d, const uint32_t *const *a,
+                                  const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  flags = rocjitsu::arith::resolve_compatibility(
+      flags, RJ_ARITH_SEMANTICS_BIT_EXACT_EMPIRICAL_NO_FP_STATUS);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (rocjitsu::arith::reports_fp_status(flags)) {
+    return RJ_ARITH_ERROR_UNSUPPORTED_FP_STATUS;
+  }
+  return half_binary_wave64<rocjitsu::arith::Binary::MaxLegacyCdna, false, true>(
+      flags, exec_mask, instruction_flags, d, a, b);
+}
+
+// Select FP16 operands with the inherited CDNA two-NaN and signaling-priority rules.
+int rj_arith_v_pk_min_f16_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                     uint32_t *const *d, const uint32_t *const *a,
+                                     const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  flags = rocjitsu::arith::resolve_compatibility(
+      flags, RJ_ARITH_SEMANTICS_BIT_EXACT_EMPIRICAL_NO_FP_STATUS);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (rocjitsu::arith::reports_fp_status(flags)) {
+    return RJ_ARITH_ERROR_UNSUPPORTED_FP_STATUS;
+  }
+  return half_binary<rocjitsu::arith::Binary::MinLegacyCdna, true, true>(
+      flags, exec_mask, instruction_flags, d, a, b);
+}
+
+// Select FP16 operands with the inherited CDNA two-NaN and signaling-priority rules.
+int rj_arith_v_pk_min_f16_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t instruction_flags,
+                                     uint32_t *const *d, const uint32_t *const *a,
+                                     const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  flags = rocjitsu::arith::resolve_compatibility(
+      flags, RJ_ARITH_SEMANTICS_BIT_EXACT_EMPIRICAL_NO_FP_STATUS);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (rocjitsu::arith::reports_fp_status(flags)) {
+    return RJ_ARITH_ERROR_UNSUPPORTED_FP_STATUS;
+  }
+  return half_binary_wave64<rocjitsu::arith::Binary::MinLegacyCdna, true, true>(
+      flags, exec_mask, instruction_flags, d, a, b);
+}
+
+// Select FP16 operands with the inherited CDNA two-NaN and signaling-priority rules.
+int rj_arith_v_pk_max_f16_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                     uint32_t *const *d, const uint32_t *const *a,
+                                     const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  flags = rocjitsu::arith::resolve_compatibility(
+      flags, RJ_ARITH_SEMANTICS_BIT_EXACT_EMPIRICAL_NO_FP_STATUS);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (rocjitsu::arith::reports_fp_status(flags)) {
+    return RJ_ARITH_ERROR_UNSUPPORTED_FP_STATUS;
+  }
+  return half_binary<rocjitsu::arith::Binary::MaxLegacyCdna, true, true>(
+      flags, exec_mask, instruction_flags, d, a, b);
+}
+
+// Select FP16 operands with the inherited CDNA two-NaN and signaling-priority rules.
+int rj_arith_v_pk_max_f16_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t instruction_flags,
+                                     uint32_t *const *d, const uint32_t *const *a,
+                                     const uint32_t *const *b, [[maybe_unused]] uint32_t *trapsts) {
+  flags = rocjitsu::arith::resolve_compatibility(
+      flags, RJ_ARITH_SEMANTICS_BIT_EXACT_EMPIRICAL_NO_FP_STATUS);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (rocjitsu::arith::reports_fp_status(flags)) {
+    return RJ_ARITH_ERROR_UNSUPPORTED_FP_STATUS;
+  }
+  return half_binary_wave64<rocjitsu::arith::Binary::MaxLegacyCdna, true, true>(
+      flags, exec_mask, instruction_flags, d, a, b);
 }

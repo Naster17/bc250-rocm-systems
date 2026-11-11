@@ -7201,6 +7201,7 @@ class CodeGenerator:
 
         from amdisa.codegen.execute.rj_arith_vector import (
             gen_vector32,
+            gen_bitop3,
             gen_carry32,
             gen_wide_integer,
             gen_integer16,
@@ -7243,6 +7244,7 @@ class CodeGenerator:
             for handler in (
                 gen_scalar,
                 gen_pseudo_scalar,
+                gen_bitop3,
                 gen_integer_dot,
                 gen_packed_integer,
                 gen_widening_integer,
@@ -14273,13 +14275,18 @@ class CodeGenerator:
                             ),
                             None,
                         )
-                        _arith_carry = _rj_arith_arithmetic and inst.name in (
-                            'V_ADD_CO_U32',
-                            'V_SUB_CO_U32',
-                            'V_SUBREV_CO_U32',
-                            'V_ADD_CO_CI_U32',
-                            'V_SUB_CO_CI_U32',
-                            'V_SUBREV_CO_CI_U32',
+                        _arith_carry = (
+                            self.isa_spec.arch_name in ('rdna3', 'rdna4')
+                            and _rj_arith_arithmetic
+                            and inst.name
+                            in (
+                                'V_ADD_CO_U32',
+                                'V_SUB_CO_U32',
+                                'V_SUBREV_CO_U32',
+                                'V_ADD_CO_CI_U32',
+                                'V_SUB_CO_CI_U32',
+                                'V_SUBREV_CO_CI_U32',
+                            )
                         )
                         _uses_secondary_result_writer = (
                             _mask_result_kind is _MaskResultKind.SECONDARY
@@ -15684,6 +15691,11 @@ class CodeGenerator:
                     CDNA_FP64_ARITHMETIC,
                     UNARY_F32,
                     UNARY_F64,
+                    CDNA_BINARY_SELECTION,
+                    CDNA_HALF_SELECTION,
+                    PACKED_TERNARY_SELECTION,
+                    CDNA_TERNARY_SELECTION,
+                    TERNARY_SELECTION_RDNA4,
                 )
 
                 if self.isa_spec.arch_name in ('cdna3', 'cdna4') and any(
@@ -15700,7 +15712,12 @@ class CodeGenerator:
                 float_names = (
                     FLOAT_NAMES
                     if self.isa_spec.arch_name in ('rdna3', 'rdna4')
-                    else CDNA_FP32_ARITHMETIC
+                    else CDNA_BINARY_SELECTION
+                    | CDNA_HALF_SELECTION
+                    | PACKED_TERNARY_SELECTION
+                    | CDNA_TERNARY_SELECTION
+                    | TERNARY_SELECTION_RDNA4
+                    | CDNA_FP32_ARITHMETIC
                     | CDNA_FP64_ARITHMETIC
                     | UNARY_F32
                     | UNARY_F64
@@ -15720,8 +15737,21 @@ class CodeGenerator:
                     cpp_includes.append(
                         ('rocjitsu/isa/arch/amdgpu/shared/rj_arith_float_exec.h', False)
                     )
+                if self.isa_spec.arch_name in ('cdna3', 'cdna4') and any(
+                    i.name in {'V_MIN_F16', 'V_MAX_F16'} for i in all_insts
+                ):
+                    cpp_includes.append(
+                        (
+                            'rocjitsu/isa/arch/amdgpu/shared/rj_arith_cdna_selection_exec.h',
+                            False,
+                        )
+                    )
                 from amdisa.codegen.execute.rj_arith_vector import (
+                    CDNA5_COMBINED32,
+                    CDNA5_PACKED_TERNARY,
                     VECTOR32_NAMES,
+                    CDNA_INTEGER_ALIASES,
+                    INTEGER_ARCHITECTURES,
                     CARRY32_NAMES,
                     WIDE_INTEGER_NAMES,
                     INTEGER16_NAMES,
@@ -15737,16 +15767,31 @@ class CodeGenerator:
                 ) and any(i.name in SCALAR_NAMES for i in all_insts)
                 if has_rj_arith_scalar:
                     cpp_includes.append(('rj_arith/rj_arith.h', False))
-                if self.isa_spec.arch_name in ('rdna3', 'rdna4') and any(
-                    i.name in VECTOR32_NAMES
-                    or i.name in CARRY32_NAMES
-                    or i.name in WIDE_INTEGER_NAMES
-                    or i.name in INTEGER16_NAMES
-                    or i.name in WIDENING_INTEGER_NAMES
-                    or i.name in PACKED_INTEGER_NAMES
-                    or i.name in INTEGER_DOT_NAMES
+                uses_vector_arith = (
+                    self.isa_spec.arch_name in INTEGER_ARCHITECTURES
+                    and any(
+                        i.name in CDNA_INTEGER_ALIASES
+                        or i.name in VECTOR32_NAMES
+                        or i.name in CARRY32_NAMES
+                        or i.name in WIDE_INTEGER_NAMES
+                        or i.name in INTEGER16_NAMES
+                        or i.name in WIDENING_INTEGER_NAMES
+                        or i.name in PACKED_INTEGER_NAMES
+                        or i.name in INTEGER_DOT_NAMES
+                        for i in all_insts
+                    )
+                )
+                uses_vector_arith |= self.isa_spec.arch_name in (
+                    'cdna4',
+                    'cdna5',
+                ) and any(
+                    i.name in ('V_PRNG_B32', 'V_BITOP3_B16', 'V_BITOP3_B32')
                     for i in all_insts
-                ):
+                )
+                uses_vector_arith |= self.isa_spec.arch_name == 'cdna5' and any(
+                    i.name in CDNA5_COMBINED32 | CDNA5_PACKED_TERNARY for i in all_insts
+                )
+                if uses_vector_arith:
                     cpp_includes.append(
                         (
                             'rocjitsu/isa/arch/amdgpu/shared/rj_arith_vector_exec.h',
