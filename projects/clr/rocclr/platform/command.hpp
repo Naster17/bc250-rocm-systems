@@ -357,6 +357,7 @@ class Command : public Event {
   bool packetCapturing_ = false;       //!< Flag to enable/disable graph gpu packet capture
   GraphPacketCaptureContext* graphCapture_ = nullptr;  //!< Capture context, owned by the graph node
   address kernArgOffset_ = nullptr;  //!< KernelArg buffer to used when graph capturing is enabled
+  int32_t statusOnCompletion_ = CL_COMPLETE;  //!< Status to report on device completion
  protected:
   bool cpu_wait_ = false;  //!< If true, then the command was issued for CPU/GPU sync
 
@@ -566,6 +567,12 @@ class Command : public Event {
 
   //! Check if this command(should be a marker) requires CPU wait
   bool CpuWaitRequested() const { return cpu_wait_; }
+
+  //! Sets the status to report when the device completes this command
+  void SetStatusOnCompletion(int32_t status) { statusOnCompletion_ = status; }
+
+  //! Returns the status to report when the device completes this command
+  int32_t StatusOnCompletion() const { return statusOnCompletion_; }
 };
 
 class UserEvent : public Command {
@@ -589,10 +596,11 @@ class UserEvent : public Command {
   //! Sets the execution status of the user event
   bool SetExecutionStatus(cl_int status) {
     if (AMD_DIRECT_DISPATCH) {
-      // If it's invalid status, then mark dependent commands as invalid
+      // If it's invalid status, then mark dependent commands as invalid. They are already
+      // submitted, so the status is applied when the device completes them.
       if (status < CL_COMPLETE) {
         for (auto it : dependents_) {
-          it->setStatus(CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST);
+          it->SetStatusOnCompletion(CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST);
         }
       }
       dependents_.clear();

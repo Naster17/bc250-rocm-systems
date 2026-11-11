@@ -3699,7 +3699,7 @@ void VirtualGPU::updateCommandsState(amd::Command* list) const {
 
     if (current->status() == CL_SUBMITTED) {
       current->setStatus(CL_RUNNING, startTimeStamp);
-      current->setStatus(CL_COMPLETE, endTimeStamp);
+      current->setStatus(current->StatusOnCompletion(), endTimeStamp);
     } else if (current->status() != CL_COMPLETE) {
       LogPrintfError("Unexpected command status - %d.", current->status());
     }
