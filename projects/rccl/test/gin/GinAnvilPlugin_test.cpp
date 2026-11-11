@@ -53,11 +53,11 @@ struct GinAnvilMockComm {
     comm.commHash = 0xA11CEUL;
     comm.rank = 0;
     comm.nRanks = 2;
-    comm.devrState.lsaSelf = 0;
-    comm.devrState.lsaSize = 2;
+    comm.devrState.lsaTeamSelf = comm.devrState.lsaDomainSelf = 0;
+    comm.devrState.lsaTeamSize = comm.devrState.lsaDomainSize = 2;
     comm.devrState.bigSize = 0x100000;
     for (int i = 0; i < 16; ++i) lsaRanks[i] = i;
-    comm.devrState.lsaRankList = lsaRanks;
+    comm.devrState.lsaTeamRankList = comm.devrState.lsaDomainRankList = lsaRanks;
   }
 
   ncclComm* get() { return &comm; }
@@ -101,7 +101,7 @@ class GinAnvilPluginTest : public ::testing::Test {
 
   void startTwoRankGin(void** ictx, void** coll, void** ginCtx) {
     GinAnvilPluginStubs::SetBootstrapNranks(2);
-    mockComm_.get()->devrState.lsaSize = 2;
+    mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = 2;
     initCtx(ictx);
     connectColl(*ictx, coll, 2);
     ncclGinConfig_t cfg{};
@@ -792,7 +792,7 @@ TEST_F(GinAnvilPluginTest, CloseColl_AfterSignalBind) {
 // an LSA team, GIN peer 1 would point past the end of a one-slot LSA window.
 TEST_F(GinAnvilPluginTest, BindSignals_GinPeerPastLsaWindowFailsRegistration) {
   GinAnvilPluginStubs::SetBootstrapNranks(2);
-  mockComm_.get()->devrState.lsaSize = 1;
+  mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = 1;
   void* ictx = nullptr;
   initCtx(&ictx);
   void* coll = nullptr;
@@ -819,8 +819,8 @@ TEST_F(GinAnvilPluginTest, BindSignals_GinPeerBeforeLsaWindowFailsRegistration) 
   GinAnvilPluginStubs::SetBootstrapNranks(4);
   mockComm_.get()->rank = 2;
   mockComm_.get()->nRanks = 4;
-  mockComm_.get()->devrState.lsaSelf = 0;
-  mockComm_.get()->devrState.lsaSize = 2;
+  mockComm_.get()->devrState.lsaTeamSelf = mockComm_.get()->devrState.lsaDomainSelf = 0;
+  mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = 2;
   mockComm_.lsaRanks[0] = 2;
   mockComm_.lsaRanks[1] = 3;
   void* ictx = nullptr;
@@ -846,7 +846,7 @@ TEST_F(GinAnvilPluginTest, BindSignals_GinPeerBeforeLsaWindowFailsRegistration) 
 // the signal slot.
 TEST_F(GinAnvilPluginTest, ConnCheck_SkippedWhenSignalSlotTooSmall) {
   GinAnvilPluginStubs::SetBootstrapNranks(2);
-  mockComm_.get()->devrState.lsaSize = 2;
+  mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = 2;
   void* ictx = nullptr;
   initCtx(&ictx);
   void* coll = nullptr;
@@ -875,7 +875,7 @@ TEST_F(GinAnvilPluginTest, BindSignals_RailGinTeamFailsRegistration) {
   mockComm_.get()->globalGinSupport = NCCL_GIN_CONNECTION_RAIL;
   mockComm_.get()->contiguousRanksPerHost = 2;
   mockComm_.get()->nRanks = 4;
-  mockComm_.get()->devrState.lsaSize = 2;
+  mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = 2;
   void* ictx = nullptr;
   initCtx(&ictx);
   void* coll = nullptr;
@@ -905,8 +905,8 @@ TEST_F(GinAnvilPluginTest, BindSignals_SpanBaseProbeSizedForWorldRanks) {
   mockComm_.get()->contiguousRanksPerHost = kWorldRanks;
   mockComm_.get()->nRanks = kWorldRanks;
   mockComm_.get()->rank = 5;
-  mockComm_.get()->devrState.lsaSize = kWorldRanks;
-  mockComm_.get()->devrState.lsaSelf = 5;
+  mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = kWorldRanks;
+  mockComm_.get()->devrState.lsaTeamSelf = mockComm_.get()->devrState.lsaDomainSelf = 5;
   void* ictx = nullptr;
   initCtx(&ictx);
   void* coll = nullptr;
@@ -938,7 +938,7 @@ TEST_F(GinAnvilPluginTest, ConnCheck_InjectFailRankAbortsBind) {
 
   ScopedEnv inj("NCCL_GIN_ANVIL_SDMA_CONN_INJECT_FAIL_RANK", "0");
   GinAnvilPluginStubs::SetBootstrapNranks(2);
-  mockComm_.get()->devrState.lsaSize = 2;
+  mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = 2;
   void* ictx = nullptr;
   initCtx(&ictx);
   void* coll = nullptr;
@@ -964,7 +964,7 @@ TEST_F(GinAnvilPluginTest, ConnCheck_EnvBypassSkipsGate) {
   ScopedEnv bypass("NCCL_GIN_ANVIL_SDMA_CONN_CHECK", "0");
   GinAnvilPluginStubs::SetBootstrapNranks(2);
   GinAnvilPluginStubs::SetConnCheckMissingCalls(-1);
-  mockComm_.get()->devrState.lsaSize = 2;
+  mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = 2;
   void* ictx = nullptr;
   initCtx(&ictx);
   void* coll = nullptr;
@@ -988,7 +988,7 @@ TEST_F(GinAnvilPluginTest, ConnCheck_EnvBypassSkipsGate) {
 TEST_F(GinAnvilPluginTest, ConnCheck_InconsistentEnvBypassFailsCollectively) {
   ScopedEnv bypass("NCCL_GIN_ANVIL_SDMA_CONN_CHECK", "0");
   GinAnvilPluginStubs::SetBootstrapNranks(2);
-  mockComm_.get()->devrState.lsaSize = 2;
+  mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = 2;
   void* ictx = nullptr;
   initCtx(&ictx);
   void* coll = nullptr;
@@ -1018,7 +1018,7 @@ TEST_F(GinAnvilPluginTest, ConnCheck_HealthyConnectivitySucceeds) {
   HipAllocation devLsa(rawDevLsa);
   GinAnvilPluginStubs::SetLsaSelfAddr(devLsa.get());
   GinAnvilPluginStubs::SetBootstrapNranks(2);
-  mockComm_.get()->devrState.lsaSize = 2;
+  mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = 2;
 
   void* ictx = nullptr;
   initCtx(&ictx);
@@ -1051,7 +1051,7 @@ TEST_F(GinAnvilPluginTest, BindSignals_CommWideCollectivesRunOncePerSpan) {
   HipAllocation devLsa(rawDevLsa);
   GinAnvilPluginStubs::SetLsaSelfAddr(devLsa.get());
   GinAnvilPluginStubs::SetBootstrapNranks(2);
-  mockComm_.get()->devrState.lsaSize = 2;
+  mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = 2;
 
   void* ictx = nullptr;
   initCtx(&ictx);
@@ -1093,7 +1093,7 @@ TEST_F(GinAnvilPluginTest, BindSignals_CommWideCollectivesRunOncePerSpan) {
 // conn-check call would repeat its setup allgather nContexts times.
 TEST_F(GinAnvilPluginTest, BindSignals_SkippedConnCheckStillRunsOncePerSpan) {
   GinAnvilPluginStubs::SetBootstrapNranks(2);
-  mockComm_.get()->devrState.lsaSize = 4;  // != nRanks, so the gate skips
+  mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = 4;  // != nRanks, so the gate skips
 
   void* ictx = nullptr;
   initCtx(&ictx);
@@ -1127,7 +1127,7 @@ TEST_F(GinAnvilPluginTest, ConnCheck_NonNumericEnvValueKeepsGateEnabled) {
   HipAllocation devLsa(rawDevLsa);
   GinAnvilPluginStubs::SetLsaSelfAddr(devLsa.get());
   GinAnvilPluginStubs::SetBootstrapNranks(2);
-  mockComm_.get()->devrState.lsaSize = 2;
+  mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = 2;
 
   void* ictx = nullptr;
   initCtx(&ictx);
@@ -1204,7 +1204,7 @@ TEST_F(GinAnvilPluginTest, ConnCheck_TransientMissRetries) {
   GinAnvilPluginStubs::SetLsaSelfAddr(devLsa.get());
   GinAnvilPluginStubs::SetConnCheckMissingCalls(1);
   GinAnvilPluginStubs::SetBootstrapNranks(2);
-  mockComm_.get()->devrState.lsaSize = 2;
+  mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = 2;
 
   void* ictx = nullptr;
   initCtx(&ictx);
@@ -1389,7 +1389,7 @@ TEST_F(GinAnvilPluginTest, ConnCheck_SkipThenQualifyingBindStillRunsGate) {
   HipAllocation devLsa(rawDevLsa);
   GinAnvilPluginStubs::SetLsaSelfAddr(devLsa.get());
   GinAnvilPluginStubs::SetBootstrapNranks(2);
-  mockComm_.get()->devrState.lsaSize = 2;
+  mockComm_.get()->devrState.lsaTeamSize = mockComm_.get()->devrState.lsaDomainSize = 2;
 
   void* ictx = nullptr;
   initCtx(&ictx);
@@ -1426,7 +1426,7 @@ TEST_F(GinAnvilPluginTest, ConnCheck_UsesLsaTeamForBootstrap) {
   GinAnvilPluginStubs::SetLsaSelfAddr(devLsa.get());
   GinAnvilPluginStubs::SetBootstrapNranks(2);
   mockComm_.get()->rank = 1;
-  mockComm_.get()->devrState.lsaSelf = 1;
+  mockComm_.get()->devrState.lsaTeamSelf = mockComm_.get()->devrState.lsaDomainSelf = 1;
 
   void* ictx = nullptr;
   initCtx(&ictx);

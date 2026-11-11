@@ -37,6 +37,7 @@ struct ncclGinBackendState {
   ncclNetProperties_t ginProps[NCCL_GIN_MAX_CONNECTIONS];
   bool supportsStrongSignals;
   bool supportsVASignals;
+  ncclGinBarrierOptions_t barrierOptions;
   // False exactly while ginComms[] hold live handles. Set before closeColl by
   // ncclGinHostFinalize and by ncclGinConnectOnce's failure path: register /
   // deregister / DevCommSetup must not walk ginComms[] once they are NULLed.
@@ -79,8 +80,8 @@ struct ncclGinState {
 };
 
 // The ginContextCount a devComm gets from a backend with ginCommCount connections.
-// ncclDevrCommCreateInternal sizes per-context resource regions with it (via
-// devrGinContextsTotal), so the two must not diverge.
+// ncclDevrCommCreateInternal sizes per-context resource regions from the
+// ginContextCount ncclGinDevCommSetup returns, so the two must not diverge.
 static inline int ncclGinContextCount(int nGinContextsRequested, int ginCommCount) {
   // ginContextCount is a hint; 0 is the documented "use a default" value. A 0
   // request would size the context table and the per-context resource regions to
@@ -102,8 +103,14 @@ bool ncclGinTypeActive(struct ncclComm* comm, ncclGinType_t ginType);
 // FIXME change to ncclGinState instead of ncclComm, no need to pass comm
 ncclResult_t ncclGinConnectOnce(struct ncclComm* comm);
 ncclResult_t ncclGinHostFinalize(struct ncclComm* comm);
+struct ncclDevCommCompat;
+struct ncclDevResourceRequirements;
+struct ncclGinBarrierReq;
 ncclResult_t ncclGinDevCommSetup(struct ncclComm* comm, struct ncclDevCommRequirements const* reqs,
-                                 struct ncclDevComm* devComm, uint32_t deviceCodeVersion);
+                                 struct ncclDevResourceRequirements* resReqs,
+                                 struct ncclGinBarrierReq const* barrierReqs, int nBarrierReqs,
+                                 struct ncclDevComm* devComm, uint32_t deviceCodeVersion,
+                                 struct ncclDevCommCompat const* devCompat);
 ncclResult_t ncclGinDevCommFree(struct ncclComm* comm, struct ncclDevComm const* devComm);
 // Zero the GIN fields ncclGinDevCommSetup filled in. ncclGinDevCommFree matches a
 // devComm by ginHandles[0], so a devComm whose contexts were freed must be cleared

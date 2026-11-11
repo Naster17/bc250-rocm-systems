@@ -400,8 +400,8 @@ exit:
     if (data[i]) free(data[i]);
   }
   free(data);
-  if (sendData) free(sendData);
-  if (recvData) free(recvData);
+  free(sendData);
+  free(recvData);
 
   NCCLCHECK(ncclStreamWaitStream(deviceStream, hostStream, comm->sharedRes->scratchEvent));
   NCCLCHECK(ncclStrongStreamRelease(ncclCudaGraphNone(comm->config.graphUsageMode), &comm->sharedRes->hostStream,
@@ -488,8 +488,8 @@ bool ncclTransportCollNetSetup(struct ncclComm* comm, struct ncclTopoGraph* coll
           comm->node, nMasters, masterPeer);
   }
 cleanup:
-  if (allConnects != NULL) free(allConnects);
-  if (masterConnects != NULL) free(masterConnects);
+  free(allConnects);
+  free(masterConnects);
   return ret != ncclSuccess;
 }
 

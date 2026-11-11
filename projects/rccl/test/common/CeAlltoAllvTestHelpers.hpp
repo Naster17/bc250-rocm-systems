@@ -47,8 +47,8 @@ struct CeAlltoAllvMockComm
         comm.config.CTAPolicy  = NCCL_CTA_POLICY_ZERO;
         // Keep mock LSA state initialized so eligibility does not inspect absent topology.
         comm.devrState.bigSize = 1;
-        comm.devrState.lsaSize = comm.nRanks;
-        comm.devrState.lsaSelf = comm.rank;
+        comm.devrState.lsaTeamSize = comm.nRanks;
+        comm.devrState.lsaTeamSelf = comm.rank;
     }
 
     // Multi-node local-only LSA so ncclHierCeAvailable can pass (bigSize skips CUDA init).
@@ -71,8 +71,8 @@ struct CeAlltoAllvMockComm
         comm.config.numRmaCtx = 1;
         comm.maxLocalRanks    = localRanks;
         comm.devrState.bigSize = 1;
-        comm.devrState.lsaSize = localRanks;
-        comm.devrState.lsaSelf = 0;
+        comm.devrState.lsaTeamSize = localRanks;
+        comm.devrState.lsaTeamSelf = 0;
     }
 
     ncclComm* get() { return &comm; }

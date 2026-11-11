@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# This code was automatically generated with version 2.32.3. Do not modify it directly.
+# This code was automatically generated with version 2.32.6. Do not modify it directly.
 
 
 
@@ -79,14 +79,6 @@ cdef extern from "<dlfcn.h>" nogil:
     enum:
         RTLD_NOW
         RTLD_GLOBAL
-
-cdef extern from "<dlfcn.h>" nogil:
-    ctypedef struct Dl_info:
-        const char* dli_fname
-        void* dli_fbase
-        const char* dli_sname
-        void* dli_saddr
-    int dladdr(const void*, Dl_info*)
 
 
 ###############################################################################
@@ -1194,34 +1186,6 @@ cdef void* load_library() except* with gil:
         f"Last dlerror: {err_str}. Set NCCL_LIBRARY or ensure "
         "ROCM_PATH/HIP_PATH points to the ROCm install."
     )
-
-
-cdef object __nccl_loaded_so_path = None
-
-
-cpdef object _inspect_loaded_library_path():
-    import os
-    # Path of the .so backing the loaded symbols, via dladdr() on a
-    # resolved entry point. None if it cannot be determined.
-    global __nccl_loaded_so_path
-    if __nccl_loaded_so_path is not None:
-        return __nccl_loaded_so_path
-
-    cdef dict ptrs = _inspect_function_pointers()
-    # Any resolved symbol maps to the same .so.
-    cdef intptr_t addr = 0
-    for value in ptrs.values():
-        if value:
-            addr = value
-            break
-
-    cdef Dl_info info
-    if addr == 0:
-        return None
-    if dladdr(<void*>addr, &info) == 0 or info.dli_fname == NULL:
-        return None
-    __nccl_loaded_so_path = os.fsdecode(<bytes>info.dli_fname)
-    return __nccl_loaded_so_path
 
 
 ###############################################################################

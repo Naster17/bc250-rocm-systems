@@ -117,9 +117,10 @@ ncclResult_t IbCastGinIbFinalize(void* ctx) {
 
 // v14 GIN plugins expose GIN capability flags via getGinProperties. IB-CAST's
 // IB proxy/GDAKI backends support both strong and VA signals.
-ncclResult_t IbCastGinIbGetGinProperties(ncclGinProperties_v14_t* ginProps) {
+ncclResult_t IbCastGinIbGetGinProperties(ncclGinProperties_t* ginProps) {
   ginProps->supportsStrongSignals = true;
   ginProps->supportsVASignals = true;
+  ginProps->barrierOptions = NCCL_GIN_BARRIER_DEFAULT;
   return ncclSuccess;
 }
 
@@ -304,8 +305,9 @@ ncclResult_t IbCastGinIbGdakiListen(void* ctx, int dev, void* opaqueHandle, void
   return netIbCast.listen(ctx, IbCastGinGdakiDevIndexes[dev], opaqueHandle, listenComm);
 }
 
+// [RCCL] GIN v15 connect passes the comm abort flag; the IB-CAST GIN connect does not poll it.
 ncclResult_t IbCastGinIbGdakiConnect(void* ctx, void* handles[], int nranks, int rank, void* listenComm,
-                                     void** collComm) {
+                                     void** collComm, volatile uint32_t* /*abortFlag*/) {
   // Check the current GPU supports GDR
   NCCLCHECK(IbCastGinIbGdrGpuSupport(/*gdaki*/ true));
 
@@ -393,8 +395,9 @@ ncclResult_t IbCastRmaIbProxyGetProperties(int dev, ncclNetProperties_t* props) 
   return ncclSuccess;
 }
 
+// [RCCL] RMA v17 connect passes the comm abort flag; the IB-CAST GIN connect does not poll it.
 ncclResult_t IbCastRmaIbProxyConnect(void* ctx, void* handles[], int nranks, int rank, void* listenComm,
-                                     void** collComm) {
+                                     void** collComm, volatile uint32_t* /*abortFlag*/) {
   // Check the current GPU supports GDR
   NCCLCHECK(IbCastGinIbGdrGpuSupport(/*gdaki*/ false));
 
@@ -416,13 +419,6 @@ ncclResult_t IbCastRmaIbProxyCreateContext(void* collComm, ncclRmaConfig_t* conf
   struct CastIbGinCollComm* cComm = (struct CastIbGinCollComm*)collComm;
   // Make sure all QP we create use the provided traffic class.
   IbCastSetTrafficClass(cComm->ctx, config->trafficClass);
-
-  int rankStride = config->rankStride <= 0 ? 1 : config->rankStride;
-  if ((cComm->nranks % rankStride) != 0) {
-    WARN("RMA_IB_PROXY create context: invalid rank stride %d, nranks (%d) must be a multiple of it", rankStride,
-         cComm->nranks);
-    return ncclInternalError;
-  }
 
   int nranks;
   struct IbCastRmaIbProxyCtx* ginProxyCtx = NULL;
@@ -450,18 +446,27 @@ ncclResult_t IbCastRmaIbProxyCreateContext(void* collComm, ncclRmaConfig_t* conf
     NCCLCHECKGOTO(ncclIbMalloc((void**)&gc->fullRecvComm, sizeof(void*) * nranks), ret, end);
     gc->rank = cComm->rank;
 
-    for (int i = 0; i < nranks; i += rankStride) {
+    // RMA v17 replaces rankStride with a sorted peerArray. Iterate through all ranks and barrier on each round to
+    // handle non-uniform peer counts across ranks; always connect to self (the self-QP serves iFlush).
+    for (int i = 0; i < nranks; i++) {
       int connectPeer = (cComm->rank + i) % nranks;
       int acceptPeer = (cComm->rank - i + nranks) % nranks;
+      bool wantConnect = (connectPeer == cComm->rank);
+      bool wantAccept = (acceptPeer == cComm->rank);
+      if (config->peerArrayCount > 0) {
+        wantConnect |= (bool)bsearch(&connectPeer, config->peerArray, config->peerArrayCount, sizeof(int), compareInts);
+        wantAccept |= (bool)bsearch(&acceptPeer, config->peerArray, config->peerArrayCount, sizeof(int), compareInts);
+      }
       do {
-        if (gc->fullSendComm[connectPeer] == NULL)
+        if (wantConnect && gc->fullSendComm[connectPeer] == NULL)
           NCCLCHECKGOTO(IbCastConnectImpl(cComm->ctx, cComm->dev, handles + NCCL_NET_HANDLE_MAXSIZE * connectPeer,
                                           &gc->fullSendComm[connectPeer], NULL,
                                           ncclParamCastGinIbTc() != -1 ? ncclParamCastGinIbTc() : ncclParamIbCastTc()),
                         ret, end);
-        if (gc->fullRecvComm[acceptPeer] == NULL)
+        if (wantAccept && gc->fullRecvComm[acceptPeer] == NULL)
           NCCLCHECKGOTO(netIbCast.accept(lComm, &gc->fullRecvComm[acceptPeer], NULL), ret, end);
-      } while ((gc->fullSendComm[connectPeer] == NULL) || (gc->fullRecvComm[acceptPeer] == NULL));
+      } while ((wantConnect && gc->fullSendComm[connectPeer] == NULL) ||
+               (wantAccept && gc->fullRecvComm[acceptPeer] == NULL));
       NCCLCHECKGOTO(IbCastGinIbP2PBarrier(cComm), ret, end);
     }
   }

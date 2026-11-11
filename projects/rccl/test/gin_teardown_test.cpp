@@ -45,10 +45,10 @@ protected:
     comm->config.numRmaCtx = 0;
 
     ncclDevrState* devr = &comm->devrState;
-    devr->lsaSelf = 0;
-    devr->lsaSize = 1;
+    devr->lsaDomainSelf = devr->lsaTeamSelf = 0;
+    devr->lsaDomainSize = devr->lsaTeamSize = 1;
     devr->nLsaTeams = 1;
-    devr->lsaRankList = &lsaRank0;
+    devr->lsaDomainRankList = devr->lsaTeamRankList = &lsaRank0;
     devr->granularity = 4096;
     devr->bigSize = 1 << 20;
     devr->ginEnabled = false;
@@ -360,10 +360,10 @@ TEST(DevrRegistrationSupportTest, DisabledElasticRejectsHostSegment) {
     comm->cuMemSupport = 1;      // the probe is gated on the comm-wide cuMem flag
     comm->globalRmaProxySupport = false;
     comm->config.numRmaCtx = 0;
-    comm->devrState.lsaSelf = 0;
-    comm->devrState.lsaSize = 1;
+    comm->devrState.lsaDomainSelf = comm->devrState.lsaTeamSelf = 0;
+    comm->devrState.lsaDomainSize = comm->devrState.lsaTeamSize = 1;
     comm->devrState.nLsaTeams = 1;
-    comm->devrState.lsaRankList = &lsaRank0;
+    comm->devrState.lsaDomainRankList = comm->devrState.lsaTeamRankList = &lsaRank0;
     comm->devrState.granularity = 4096;
     comm->devrState.bigSize = 1 << 20;
     comm->devrState.ginEnabled = false;

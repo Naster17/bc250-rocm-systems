@@ -11,6 +11,7 @@
 
 #include <cstdlib>
 #include <memory>
+#include <vector>
 
 #include "fakes/dev_runtime_fakes.h"
 
@@ -43,8 +44,6 @@ protected:
   void SetUp() override {
     commStorage = std::make_unique<ncclComm>(); // value-initialised: POD members zeroed
     comm = commStorage.get();
-    // Only computeCftSize/computeCftMcSize read bigSize; the ncclDevrInitOnce fake ignores it.
-    comm->devrState.bigSize = 1;
   }
 
   void TearDown() override {
@@ -65,67 +64,109 @@ TEST_F(CftDevRuntimeMicrotest, GpuCftSupport_ZeroesAllThreeOutputsAndSucceeds) {
   EXPECT_FALSE(gpuCftCountedSupport);
 }
 
-// computeCftSize / computeCftMcSize
+// computeCftSizes: starts from computeLsaTeamSize for both sizes; with gpuCftSupport >= 13040
+// it switches to the CUDA logical-endpoint clique sizes (gcd of the runs of equal peerInfo clique
+// ids) when every rank reported an id, and rejects clique sizes that do not nest.
 
-TEST_F(CftDevRuntimeMicrotest, ComputeCftSize_AlreadySized_ReturnsCftSizeWithoutCallingComputeLsaSize) {
-  comm->devrState.bigSize = 7;
-  comm->devrState.cftSize = 42;
-  bool called = false;
-  g_computeLsaSize = [&](ncclComm*) { called = true; return 1; };
-  EXPECT_EQ(computeCftSize(comm), 42);
-  EXPECT_FALSE(called);
-}
+namespace {
+// Gives the comm nRanks peerInfo entries with the given unicast/multicast clique ids.
+struct CliquePeers {
+  std::vector<ncclPeerInfo> peers;
+  CliquePeers(ncclComm* comm, std::vector<uint32_t> const& uc, std::vector<uint32_t> const& mc)
+      : peers(uc.size()) {
+    for (size_t r = 0; r < uc.size(); r++) {
+      peers[r].cftUnicastCliqueId = uc[r];
+      peers[r].cftMulticastCliqueId = mc[r];
+    }
+    comm->nRanks = static_cast<int>(uc.size());
+    comm->peerInfo = peers.data();
+  }
+};
+} // namespace
 
-TEST_F(CftDevRuntimeMicrotest, ComputeCftSize_NotSizedNoGpuCftSupport_ReturnsOneWithoutCallingComputeLsaSize) {
-  comm->devrState.bigSize = 0;
+TEST_F(CftDevRuntimeMicrotest, ComputeCftSizes_NoGpuCftSupport_BothSizesAreLsaTeamSize) {
   comm->gpuCftSupport = 0;
-  bool called = false;
-  g_computeLsaSize = [&](ncclComm*) { called = true; return 99; };
-  EXPECT_EQ(computeCftSize(comm), 1);
-  EXPECT_FALSE(called);
+  g_computeLsaTeamSize = [](ncclComm*) { return 8; };
+  int cftSize = -1, cftMcSize = -1;
+  EXPECT_EQ(computeCftSizes(comm, &cftSize, &cftMcSize), ncclSuccess);
+  EXPECT_EQ(cftSize, 8);
+  EXPECT_EQ(cftMcSize, 8);
 }
 
-TEST_F(CftDevRuntimeMicrotest, ComputeCftSize_NotSizedWithGpuCftSupport_DelegatesToComputeLsaSize) {
-  comm->devrState.bigSize = 0;
-  comm->gpuCftSupport = 13030;
-  g_computeLsaSize = [](ncclComm*) { return 8; };
-  EXPECT_EQ(computeCftSize(comm), 8);
+TEST_F(CftDevRuntimeMicrotest, ComputeCftSizes_GpuCftSupportJustBelow13040_IgnoresCliqueIds) {
+  // 13039 is the first value the `>= 13040` check must reject: the clique ids below would give UC 4 / MC 2.
+  CliquePeers p(comm, {0, 0, 0, 0, 1, 1, 1, 1}, {0, 0, 1, 1, 2, 2, 3, 3});
+  comm->gpuCftSupport = 13039;
+  comm->gpuCftMulticastSupport = true;
+  g_computeLsaTeamSize = [](ncclComm*) { return 2; };
+  int cftSize = -1, cftMcSize = -1;
+  EXPECT_EQ(computeCftSizes(comm, &cftSize, &cftMcSize), ncclSuccess);
+  EXPECT_EQ(cftSize, 2);
+  EXPECT_EQ(cftMcSize, 2);
 }
 
-TEST_F(CftDevRuntimeMicrotest, ComputeCftSizeAndMcSize_GpuCftSupportJustBelow13030_ReturnsOne) {
-  // 13029 is the first value the `>= 13030` check must reject.
-  comm->devrState.bigSize = 0;
-  comm->gpuCftSupport = 13029;
-  bool called = false;
-  g_computeLsaSize = [&](ncclComm*) { called = true; return 99; };
-  EXPECT_EQ(computeCftSize(comm), 1);
-  EXPECT_EQ(computeCftMcSize(comm), 1);
-  EXPECT_FALSE(called);
+TEST_F(CftDevRuntimeMicrotest, ComputeCftSizes_CliqueIdsWithMulticast_UsesCliqueSizes) {
+  CliquePeers p(comm, {0, 0, 0, 0, 1, 1, 1, 1}, {0, 0, 1, 1, 2, 2, 3, 3});
+  comm->gpuCftSupport = 13040;
+  comm->gpuCftMulticastSupport = true;
+  g_computeLsaTeamSize = [](ncclComm*) { return 2; };
+  int cftSize = -1, cftMcSize = -1;
+  EXPECT_EQ(computeCftSizes(comm, &cftSize, &cftMcSize), ncclSuccess);
+  EXPECT_EQ(cftSize, 4);
+  EXPECT_EQ(cftMcSize, 2);
 }
 
-TEST_F(CftDevRuntimeMicrotest, ComputeCftMcSize_AlreadySized_ReturnsCftMcSizeWithoutCallingComputeLsaSize) {
-  comm->devrState.bigSize = 7;
-  comm->devrState.cftMcSize = 24;
-  bool called = false;
-  g_computeLsaSize = [&](ncclComm*) { called = true; return 1; };
-  EXPECT_EQ(computeCftMcSize(comm), 24);
-  EXPECT_FALSE(called);
+TEST_F(CftDevRuntimeMicrotest, ComputeCftSizes_CliqueIdsUnevenRuns_UsesGcdOfRunLengths) {
+  // Unicast runs of 4 and 2 give gcd 2.
+  CliquePeers p(comm, {5, 5, 5, 5, 6, 6}, {0, 0, 0, 0, 0, 0});
+  comm->gpuCftSupport = 13040;
+  comm->gpuCftMulticastSupport = false;
+  g_computeLsaTeamSize = [](ncclComm*) { return 1; };
+  int cftSize = -1, cftMcSize = -1;
+  EXPECT_EQ(computeCftSizes(comm, &cftSize, &cftMcSize), ncclSuccess);
+  EXPECT_EQ(cftSize, 2);
+  EXPECT_EQ(cftMcSize, 1); // no multicast support: MC clique size is 1
 }
 
-TEST_F(CftDevRuntimeMicrotest, ComputeCftMcSize_NotSizedNoGpuCftSupport_ReturnsOneWithoutCallingComputeLsaSize) {
-  comm->devrState.bigSize = 0;
-  comm->gpuCftSupport = 0;
-  bool called = false;
-  g_computeLsaSize = [&](ncclComm*) { called = true; return 99; };
-  EXPECT_EQ(computeCftMcSize(comm), 1);
-  EXPECT_FALSE(called);
+TEST_F(CftDevRuntimeMicrotest, ComputeCftSizes_RankWithoutUnicastCliqueId_FallsBackToLsaTeamSize) {
+  CliquePeers p(comm, {0, 0, UINT32_MAX, 0}, {0, 0, 0, 0});
+  comm->gpuCftSupport = 13040;
+  comm->gpuCftMulticastSupport = true;
+  g_computeLsaTeamSize = [](ncclComm*) { return 4; };
+  int cftSize = -1, cftMcSize = -1;
+  EXPECT_EQ(computeCftSizes(comm, &cftSize, &cftMcSize), ncclSuccess);
+  EXPECT_EQ(cftSize, 4);
+  EXPECT_EQ(cftMcSize, 4);
 }
 
-TEST_F(CftDevRuntimeMicrotest, ComputeCftMcSize_NotSizedWithGpuCftSupport_DelegatesToComputeLsaSize) {
-  comm->devrState.bigSize = 0;
-  comm->gpuCftSupport = 13030;
-  g_computeLsaSize = [](ncclComm*) { return 6; };
-  EXPECT_EQ(computeCftMcSize(comm), 6);
+TEST_F(CftDevRuntimeMicrotest, ComputeCftSizes_RankWithoutMulticastCliqueId_FallsBackToLsaTeamSize) {
+  CliquePeers p(comm, {0, 0, 0, 0}, {0, 0, 1, UINT32_MAX});
+  comm->gpuCftSupport = 13040;
+  comm->gpuCftMulticastSupport = true;
+  g_computeLsaTeamSize = [](ncclComm*) { return 2; };
+  int cftSize = -1, cftMcSize = -1;
+  EXPECT_EQ(computeCftSizes(comm, &cftSize, &cftMcSize), ncclSuccess);
+  EXPECT_EQ(cftSize, 2);
+  EXPECT_EQ(cftMcSize, 2);
+}
+
+TEST_F(CftDevRuntimeMicrotest, ComputeCftSizes_UnicastCliqueNotMultipleOfLsaTeamSize_ReturnsInternalError) {
+  CliquePeers p(comm, {0, 0, 1, 1}, {0, 0, 1, 1});
+  comm->gpuCftSupport = 13040;
+  comm->gpuCftMulticastSupport = true;
+  g_computeLsaTeamSize = [](ncclComm*) { return 4; };
+  int cftSize = -1, cftMcSize = -1;
+  EXPECT_EQ(computeCftSizes(comm, &cftSize, &cftMcSize), ncclInternalError);
+}
+
+TEST_F(CftDevRuntimeMicrotest, ComputeCftSizes_UnicastCliqueNotMultipleOfMulticastClique_ReturnsInternalError) {
+  // UC clique 2, MC clique 4: UC % MC != 0.
+  CliquePeers p(comm, {0, 0, 1, 1}, {0, 0, 0, 0});
+  comm->gpuCftSupport = 13040;
+  comm->gpuCftMulticastSupport = true;
+  g_computeLsaTeamSize = [](ncclComm*) { return 1; };
+  int cftSize = -1, cftMcSize = -1;
+  EXPECT_EQ(computeCftSizes(comm, &cftSize, &cftMcSize), ncclInternalError);
 }
 
 // symBindTeamLe / symUnbindTeamLe: the CUDA calls are compiled out, so they always succeed and

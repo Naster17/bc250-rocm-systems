@@ -28,7 +28,12 @@
 ifneq ($(EMIT_LLVM_IR), 0)
 
 ##### Source #####
+# NCCL's src/nccl_device_ir.cu (the ncclIr* ABI) only builds with Clang CUDA
+# or NVCC (#error otherwise, PTX inline asm), so the HIP bitcode is still built
+# from RCCL's nccl_device_wrapper{,__impl}.h. The shared ReduceCopy type lists
+# now live in src/util.h.
 LLVM_SRC := nccl_device_wrapper__impl.h
+LLVM_IMPL_HEADERS := src/util.h
 
 ##### RCCL root (bindings/ir -> projects/rccl) #####
 RCCL_ROOT ?= $(abspath ../..)
@@ -53,7 +58,9 @@ LLVM_AS  ?= $(ROCM_LLVM)/bin/llvm-as
 ##### Build configuration #####
 # Default GPU architecture; override on the command line, e.g.:
 #     make BITCODE_LIB_ARCH=gfx942
-BITCODE_LIB_ARCH ?= gfx950
+# IR_ARCH (NCCL's unified IR architecture option) is accepted as an alias.
+IR_ARCH          ?= gfx950
+BITCODE_LIB_ARCH ?= $(IR_ARCH)
 
 # RCCL device APIs are C++17.
 BITCODE_CXX_STD  ?= gnu++17
@@ -137,7 +144,7 @@ $(WRAPPER_HEADER): nccl_device_wrapper.h
 	@echo "Copying nccl_device_wrapper.h -> $@"
 	cp -f $< $@
 
-$(UNOPTIMIZED_BC): $(LLVM_SRC) $(WRAPPER_HEADER) util.h check_hipify
+$(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_IMPL_HEADERS) $(WRAPPER_HEADER) check_hipify
 	@mkdir -p $(OBJDIR)
 	@echo "Generating unoptimized LLVM bitcode for $(BITCODE_LIB_ARCH)..."
 	$(CLANG) $(CLANG_FLAGS) $(LLVM_SRC) -o $@

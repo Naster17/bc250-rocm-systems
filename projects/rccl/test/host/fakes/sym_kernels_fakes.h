@@ -29,6 +29,7 @@ extern std::function<bool(struct ncclComm*, ncclFunc_t, int, ncclDataType_t, siz
 extern std::function<bool(int)> g_symkKernelIdIsLL;
 extern std::function<bool(int)> g_symkKernelIdIsTma;
 extern std::function<ncclResult_t(struct ncclComm*)> g_symkFinalize;
+extern std::function<bool(struct ncclComm*)> g_symkAlltoAllLLForced;
 
 // ncclSymkLLKernelMask/ncclSymkDynamicSmemKernelMask/ncclSymkGetKernelIndex/ncclSymkKernelIdToString/
 // ncclSymkMakeDevWork seams live in sym_kernels_index_fakes.h, not here (rccl-UnitTestsMicro links the
