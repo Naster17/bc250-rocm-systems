@@ -3,6 +3,7 @@
 
 #include "rocjitsu/vm/plugins/race_detector/plugin.h"
 
+#include "rocjitsu/isa/arch/amdgpu/shared/addr_calc_buffer.h"
 #include "rocjitsu/isa/arch/amdgpu/shared/wait_counter_policy.h"
 #include "rocjitsu/isa/instruction.h"
 #include "rocjitsu/vm/amdgpu/compute_unit.h"
@@ -143,17 +144,35 @@ amdgpu::MemoryIssueInfo exec_zero_counted_obligations(const amdgpu::MemoryIssueI
   return counted;
 }
 
-/// Record the counter slot of a gfx1250 memory instruction issued with EXEC
-/// zero, on the counters exec_zero_counted_obligations() selects, as an event
-/// with no registers and no LDS bytes. Later capacity checks and partial waits
-/// must count that slot. Recording it is sound even if the instruction was
-/// skipped: those counters were then zero, so every earlier operation on them
-/// had completed, and oldest-first retirement reaches the slot before any later
-/// operation. A FLAT instruction's slots are recorded by
-/// register_unused_flat_domains(), so its routed obligations here are empty.
-void register_exec_zero_slot(WaveRaceState &race, const InstructionSnapshot &instruction,
-                             std::span<const amdgpu::MemoryCounterObligation> obligations,
-                             MemoryOrderClass memoryOrder, bool is_load) {
+/// A gfx1250 VBUFFER instruction whose resource descriptor TYPE is not a buffer
+/// is ignored (CDNA5 ISA 9.6), so it applies no backpressure and holds no
+/// counter slot. If hardware still counted it, leaving it out only keeps older
+/// operations pending longer.
+bool ignored_memory_issue(const Instruction &inst, const amdgpu::Wavefront &wf) {
+  // Every gfx1250 VBUFFER instruction has conditional memory lanes, so others
+  // skip decoding their register modifiers.
+  if (wf.cu().arch() != ROCJITSU_CODE_ARCH_CDNA5 || !(inst.flags() & CONDITIONAL_MEMORY_LANES))
+    return false;
+  amdgpu::RegisterModifiers modifiers;
+  inst.amdgpu_register_modifiers(modifiers);
+  return amdgpu::addr_calc::cdna5_ignores_buffer_resource(modifiers, wf);
+}
+
+/// Record a counter slot that an instruction holds without registers or LDS
+/// bytes, as an event, so that later capacity checks and partial waits count
+/// it. Two kinds of gfx1250 instruction hold one:
+/// - A memory instruction issued with EXEC zero, on the counters
+///   exec_zero_counted_obligations() selects. Recording the slot is sound even
+///   if the instruction was skipped: those counters were then zero, so every
+///   earlier operation on them had completed, and oldest-first retirement
+///   reaches the slot before any later operation. A FLAT instruction's slots
+///   are recorded by register_unused_flat_domains(), so its routed obligations
+///   here are empty.
+/// - GLOBAL_INV on LOADcnt, and GLOBAL_WB and GLOBAL_WBINV on STOREcnt, each in
+///   order with the VMEM operations on its counter.
+void register_counter_slot(WaveRaceState &race, const InstructionSnapshot &instruction,
+                           std::span<const amdgpu::MemoryCounterObligation> obligations,
+                           MemoryOrderClass memoryOrder, bool is_load) {
   if (obligations.empty())
     return;
   race.registerEvent(instruction,
@@ -514,14 +533,15 @@ void RaceDetectorPlugin::onAmdgpuMemoryAccessRouted(const amdgpu::MemoryAccessOb
                                  inst.data_as<amdgpu::VectorMemState>()->is_load);
 
   // A gfx1250 instruction issued with wave EXEC zero holds its counter slot. An
-  // access whose lanes are all cleared while EXEC is active, such as one to an
-  // architecturally ignored resource type, records none.
+  // access whose lanes are all cleared while EXEC is active records none, and
+  // neither does an ignored buffer instruction (see ignored_memory_issue()).
   const auto record_exec_zero_slot = [&](bool is_load) {
-    if (!exec_zero_memory_issue_counts(wf.cu().arch()) || wf.exec() != 0)
+    if (!exec_zero_memory_issue_counts(wf.cu().arch()) || wf.exec() != 0 ||
+        ignored_memory_issue(inst, wf))
       return;
     const auto counted = exec_zero_counted_obligations(issue, inst.mnemonic());
-    register_exec_zero_slot(*rs, instruction, counted.counter_obligations(),
-                            memoryOrderForObligations(counted.counter_obligations()), is_load);
+    register_counter_slot(*rs, instruction, counted.counter_obligations(),
+                          memoryOrderForObligations(counted.counter_obligations()), is_load);
   };
 
   const uint64_t sharedLanes = access.flat_local_lane_mask | access.flat_dds_lane_mask;
@@ -791,23 +811,32 @@ void RaceDetectorPlugin::onAmdgpuBeforeExecuteInstruction(uint64_t pc, const Ins
         (!inst.mnemonic().starts_with("flat_") || flat_counts_on_both_domains(wf.cu().arch()))) {
       const auto *info = inst.amdgpu_memory_issue_info();
       assert(info && "memory instruction reached the race detector without issue metadata");
-      if (info && (!info->exec_masked || wf.exec() != 0))
-        s->race_state->prepareForMemoryIssue(*info);
-      else if (info && exec_zero_memory_issue_counts(wf.cu().arch()))
-        s->race_state->prepareForMemoryIssue(exec_zero_counted_obligations(*info, inst.mnemonic()));
+      if (info && !ignored_memory_issue(inst, wf)) {
+        if (!info->exec_masked || wf.exec() != 0)
+          s->race_state->prepareForMemoryIssue(*info);
+        else if (exec_zero_memory_issue_counts(wf.cu().arch()))
+          s->race_state->prepareForMemoryIssue(
+              exec_zero_counted_obligations(*info, inst.mnemonic()));
+      }
     }
 
     // GLOBAL_INV counts on LOADcnt and GLOBAL_WB and GLOBAL_WBINV on STOREcnt
     // (CDNA5 ISA 5.7.1.2), and none of them is skipped for EXEC zero (CDNA5 ISA
     // 3.2.2.1). They carry no memory issue metadata, so their gfx1250
-    // backpressure is applied here.
+    // backpressure is applied here. Each then holds its slot in order with the
+    // VMEM operations on its counter, as LLVM orders GLOBAL_INV with VMEM reads.
     if (wf.cu().arch() == ROCJITSU_CODE_ARCH_CDNA5 && inst.is_memory_wait_producer() &&
         !inst.is_memory_op()) {
       const std::string_view cache_op = inst.mnemonic();
-      if (cache_op == "global_inv")
-        s->race_state->prepareForCounterIncrement(amdgpu::WaitCounterType::LOADCNT);
-      else if (cache_op == "global_wb" || cache_op == "global_wbinv")
-        s->race_state->prepareForCounterIncrement(amdgpu::WaitCounterType::STORECNT);
+      const bool invalidate = cache_op == "global_inv";
+      if (invalidate || cache_op == "global_wb" || cache_op == "global_wbinv") {
+        const auto counter =
+            invalidate ? amdgpu::WaitCounterType::LOADCNT : amdgpu::WaitCounterType::STORECNT;
+        s->race_state->prepareForCounterIncrement(counter);
+        const amdgpu::MemoryCounterObligation slot{counter, amdgpu::MemoryCompletionClass::VMEM};
+        register_counter_slot(*s->race_state, instruction, {&slot, 1}, MemoryOrderClass::VMEM,
+                              /*is_load=*/invalidate);
+      }
     }
 
     // Messages are not memory instructions, so they remain outside memory

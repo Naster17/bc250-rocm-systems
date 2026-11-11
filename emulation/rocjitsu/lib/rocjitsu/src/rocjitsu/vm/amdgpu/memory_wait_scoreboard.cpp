@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 #include "rocjitsu/vm/amdgpu/memory_wait_scoreboard.h"
-#include "rocjitsu/isa/arch/amdgpu/cdna5/addr_calc.h"
 #include "rocjitsu/isa/arch/amdgpu/shared/accvgpr_layout.h"
 #include "rocjitsu/isa/arch/amdgpu/shared/addr_calc_buffer.h"
 #include "rocjitsu/isa/arch/amdgpu/shared/branch_stack.h"
@@ -143,14 +142,8 @@ uint64_t MemoryWaitScoreboard::result_lanes(const Instruction &inst, Wavefront &
     lanes = wave32_exec_all_if_nonzero(lanes);
   if (modifiers.exec_whole_quads)
     lanes = result_is_written(inst, wf) ? whole_active_quads(lanes) : 0;
-  if (lanes && wf.cu().arch() == ROCJITSU_CODE_ARCH_CDNA5 && modifiers.buffer_resource &&
-      !modifiers.scalar_buffer_words) {
-    const auto selector = modifiers.buffer_resource->encoding_value();
-    if (addr_calc::buffer_resource_range_is_backed(wf, selector))
-      if (const auto word3 = RegisterAccess(wf).scalar_control_value(selector + 3))
-        if (cdna5::decode_buffer_resource(0, 0, 0, *word3).type != 0)
-          return 0;
-  }
+  if (lanes && addr_calc::cdna5_ignores_buffer_resource(modifiers, wf))
+    return 0;
   return lanes;
 }
 
