@@ -735,6 +735,8 @@ void print_usage() {
          "  rocjitsu --profile "
       << kDefaultProfile
       << " -- ./app          Run with a bundled profile config\n"
+         "  rocjitsu --exec-mode clocked -- ./app        Override the config execution mode\n"
+         "  rocjitsu --gpus-per-node 2 -- ./app         Override the emulated GPU count\n"
          "  rocjitsu --daemon --config foo.json -- ./app Daemon mode (fork daemon + launch app)\n"
          "  rocjitsu --daemon --config foo.json          Daemon-only (run server)\n"
          "  rocjitsu --attach --config foo.json -- ./app Attach to running daemon\n"
@@ -751,6 +753,11 @@ void print_usage() {
       << " outside attach mode.\n"
          "  --node <id>      Select one local node from a system manifest. Not available\n"
          "                    with --attach or dbt_guest mode.\n"
+         "  --exec-mode <mode>\n"
+         "                    Override the top-level config exec_mode: functional or clocked.\n"
+         "  --plugin <name>   Enable an execution plugin with its default config. Repeatable.\n"
+         "  --gpus-per-node <n>\n"
+         "                    Override the emulated GPU count for this launch.\n"
          "  --env KEY=VALUE  Add or replace an environment variable for the launched app.\n"
          "  --clear-env-vars Start the launched app with a clean environment, preserving\n"
          "                    PATH, HOME, TERM, USER, LOGNAME, SHELL, LANG, LC_ALL,\n"
@@ -891,6 +898,42 @@ int main(int argc, char *argv[]) {
     }
     if (node_result == OptionValueResult::Value) {
       local_node = parsed_value;
+      continue;
+    }
+    const OptionValueResult exec_mode_result =
+        parse_option_value(arg, "--exec-mode", argc, argv, i, parsed_value);
+    if (exec_mode_result == OptionValueResult::Error) {
+      return 1;
+    }
+    if (exec_mode_result == OptionValueResult::Value) {
+      if (parsed_value != "functional" && parsed_value != "clocked") {
+        std::cerr << "rocjitsu: --exec-mode requires functional or clocked\n";
+        return 1;
+      }
+      overrides.exec_mode = std::string(parsed_value);
+      continue;
+    }
+    const OptionValueResult plugin_result =
+        parse_option_value(arg, "--plugin", argc, argv, i, parsed_value);
+    if (plugin_result == OptionValueResult::Error) {
+      return 1;
+    }
+    if (plugin_result == OptionValueResult::Value) {
+      overrides.plugins.emplace_back(parsed_value);
+      continue;
+    }
+    const OptionValueResult gpus_per_node_result =
+        parse_option_value(arg, "--gpus-per-node", argc, argv, i, parsed_value);
+    if (gpus_per_node_result == OptionValueResult::Error) {
+      return 1;
+    }
+    if (gpus_per_node_result == OptionValueResult::Value) {
+      std::optional<uint32_t> count = config::parse_uint32(parsed_value);
+      if (!count || *count == 0) {
+        std::cerr << "rocjitsu: --gpus-per-node requires a positive integer\n";
+        return 1;
+      }
+      overrides.gpus_per_node = *count;
       continue;
     }
 
@@ -1102,6 +1145,18 @@ int main(int argc, char *argv[]) {
 
   // Attaching joins a daemon that already built its machine from its own config,
   // so these overrides cannot change it.
+  if (overrides.exec_mode && attach_mode) {
+    std::cerr << "rocjitsu: --exec-mode cannot be combined with --attach\n";
+    return 1;
+  }
+  if (overrides.gpus_per_node && attach_mode) {
+    std::cerr << "rocjitsu: --gpus-per-node cannot be combined with --attach\n";
+    return 1;
+  }
+  if (!overrides.plugins.empty() && attach_mode) {
+    std::cerr << "rocjitsu: --plugin cannot be combined with --attach\n";
+    return 1;
+  }
   if (overrides.cpu_thread_budget && attach_mode) {
     std::cerr << "rocjitsu: --cpu-thread-budget cannot be combined with --attach\n";
     return 1;
@@ -1296,6 +1351,21 @@ int main(int argc, char *argv[]) {
     std::cerr << std::format("rocjitsu: --cpu-thread-budget cannot be combined with a dbt_guest "
                              "simulator_config; set cpu_thread_budget in {} instead\n",
                              dbt_guest_config.host.simulator_config_path);
+    return 1;
+  }
+  if (dbt_guest_mode && overrides.exec_mode &&
+      !dbt_guest_config.host.simulator_config_path.empty()) {
+    std::cerr << "rocjitsu: --exec-mode cannot be combined with a dbt_guest simulator_config\n";
+    return 1;
+  }
+  if (dbt_guest_mode && overrides.gpus_per_node &&
+      !dbt_guest_config.host.simulator_config_path.empty()) {
+    std::cerr << "rocjitsu: --gpus-per-node cannot be combined with a dbt_guest simulator_config\n";
+    return 1;
+  }
+  if (dbt_guest_mode && !overrides.plugins.empty() &&
+      !dbt_guest_config.host.simulator_config_path.empty()) {
+    std::cerr << "rocjitsu: --plugin cannot be combined with a dbt_guest simulator_config\n";
     return 1;
   }
   if (dbt_guest_mode && overrides.wait_checking &&

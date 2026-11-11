@@ -223,6 +223,55 @@ add_test(
         ${_rj_cli_failure_script}
 )
 
+add_test(
+    NAME RocjitsuExecModeOverrideThreadBudget
+    COMMAND
+        $<TARGET_FILE:rocjitsu_bin> --profile mi350x --exec-mode clocked
+        --thread-budget-table
+)
+add_test(
+    NAME RocjitsuGpusPerNodeOverrideThreadBudget
+    COMMAND
+        $<TARGET_FILE:rocjitsu_bin> --profile mi350x --gpus-per-node 2
+        --thread-budget-table
+)
+add_test(
+    NAME RocjitsuPluginOverrideThreadBudget
+    COMMAND
+        $<TARGET_FILE:rocjitsu_bin> --profile mi350x --plugin race
+        --thread-budget-table
+)
+set_tests_properties(
+    RocjitsuExecModeOverrideThreadBudget
+    RocjitsuGpusPerNodeOverrideThreadBudget
+    RocjitsuPluginOverrideThreadBudget
+    PROPERTIES PASS_REGULAR_EXPRESSION "Configured"
+)
+add_test(
+    NAME RocjitsuExecModeRejectsInvalid
+    COMMAND
+        ${CMAKE_COMMAND} "-DTEST_EXECUTABLE=$<TARGET_FILE:rocjitsu_bin>"
+        "-DTEST_ARGS=--profile;mi350x;--exec-mode;maybe;--thread-budget-table"
+        "-DTEST_REGEX=--exec-mode requires functional or clocked" -P
+        ${_rj_cli_failure_script}
+)
+add_test(
+    NAME RocjitsuGpusPerNodeRejectsZero
+    COMMAND
+        ${CMAKE_COMMAND} "-DTEST_EXECUTABLE=$<TARGET_FILE:rocjitsu_bin>"
+        "-DTEST_ARGS=--profile;mi350x;--gpus-per-node;0;--thread-budget-table"
+        "-DTEST_REGEX=--gpus-per-node requires a positive integer" -P
+        ${_rj_cli_failure_script}
+)
+add_test(
+    NAME RocjitsuPluginRejectsInvalidName
+    COMMAND
+        ${CMAKE_COMMAND} "-DTEST_EXECUTABLE=$<TARGET_FILE:rocjitsu_bin>"
+        "-DTEST_ARGS=--profile;mi350x;--plugin;../race;--thread-budget-table"
+        "-DTEST_REGEX=invalid plugin name '../race'" -P
+        ${_rj_cli_failure_script}
+)
+
 # Keep profile coverage after the complete CPU-budget group so each CLI feature's
 # success and rejection cases stay together.
 add_test(
@@ -727,6 +776,31 @@ add_test(
         ${CMAKE_COMMAND} "-DTEST_EXECUTABLE=$<TARGET_FILE:rocjitsu_bin>"
         "-DTEST_ARGS=--config;${_rj_dbt_visibility_config};--gdb-ex;run;--;/bin/true"
         "-DTEST_REGEX=--gdb requires daemon mode, which dbt_guest does not support yet"
+        -P ${_rj_cli_failure_script}
+)
+
+add_test(
+    NAME RocjitsuDbtSimulatorConfigRejectsExecMode
+    COMMAND
+        ${CMAKE_COMMAND} "-DTEST_EXECUTABLE=$<TARGET_FILE:rocjitsu_bin>"
+        "-DTEST_ARGS=--config;${_rj_dbt_visibility_config};--exec-mode;clocked;--;/usr/bin/true"
+        "-DTEST_REGEX=--exec-mode cannot be combined with a dbt_guest simulator_config"
+        -P ${_rj_cli_failure_script}
+)
+add_test(
+    NAME RocjitsuDbtSimulatorConfigRejectsGpusPerNode
+    COMMAND
+        ${CMAKE_COMMAND} "-DTEST_EXECUTABLE=$<TARGET_FILE:rocjitsu_bin>"
+        "-DTEST_ARGS=--config;${_rj_dbt_visibility_config};--gpus-per-node;2;--;/usr/bin/true"
+        "-DTEST_REGEX=--gpus-per-node cannot be combined with a dbt_guest simulator_config"
+        -P ${_rj_cli_failure_script}
+)
+add_test(
+    NAME RocjitsuDbtSimulatorConfigRejectsPlugin
+    COMMAND
+        ${CMAKE_COMMAND} "-DTEST_EXECUTABLE=$<TARGET_FILE:rocjitsu_bin>"
+        "-DTEST_ARGS=--config;${_rj_dbt_visibility_config};--plugin;race;--;/usr/bin/true"
+        "-DTEST_REGEX=--plugin cannot be combined with a dbt_guest simulator_config"
         -P ${_rj_cli_failure_script}
 )
 

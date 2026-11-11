@@ -11,6 +11,7 @@
 #include "embedded_schema.h"
 #include "simulation_config_generated.h"
 
+#include <cctype>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -46,6 +47,96 @@ std::string json_string(std::string_view value) {
   return result;
 }
 
+bool is_json_object(std::string_view value) {
+  const size_t at = value.find_first_not_of(" \t\r\n");
+  return at != std::string_view::npos && value[at] == '{';
+}
+
+bool is_valid_plugin_name(std::string_view name) {
+  if (name.empty())
+    return false;
+  for (unsigned char c : name)
+    if (!std::isalnum(c) && c != '_' && c != '-')
+      return false;
+  return true;
+}
+
+FailureOr<std::string> json_with_gpu_count(std::string_view json, uint32_t count,
+                                           const util::DiagnosticEmitter &emit_error) {
+  FailureOr<std::string> vm = json_top_level_field(json, "vm", emit_error);
+  if (vm.failed())
+    return Result::failure();
+  if (vm.value().empty())
+    return emit_error.emit() << "cannot apply gpus_per_node: simulation config has no vm";
+  if (!is_json_object(vm.value()))
+    return emit_error.emit()
+           << "cannot apply gpus_per_node: simulation config vm must be an object";
+
+  FailureOr<std::string> gpu = json_top_level_field(vm.value(), "gpu", emit_error);
+  if (gpu.failed())
+    return Result::failure();
+  if (gpu.value().empty())
+    return emit_error.emit() << "cannot apply gpus_per_node: simulation config has no vm.gpu";
+  if (!is_json_object(gpu.value()))
+    return emit_error.emit()
+           << "cannot apply gpus_per_node: simulation config vm.gpu must be an object";
+
+  FailureOr<std::string> rewritten_gpu =
+      set_top_level_field(gpu.value(), "num_gpus", std::to_string(count), emit_error);
+  if (rewritten_gpu.failed())
+    return Result::failure();
+  FailureOr<std::string> rewritten_vm =
+      set_top_level_field(vm.value(), "gpu", rewritten_gpu.value(), emit_error);
+  if (rewritten_vm.failed())
+    return Result::failure();
+  FailureOr<std::string> rewritten =
+      set_top_level_field(json, "vm", rewritten_vm.value(), emit_error);
+  if (rewritten.failed())
+    return Result::failure();
+
+  FailureOr<uint32_t> applied = with_parsed_simulation_config_json(
+      rewritten.value(), rocjitsu::kEmbeddedSchema, emit_error,
+      [](const fb::SimulationConfig *config) -> FailureOr<uint32_t> {
+        return config->vm() && config->vm()->gpu() ? config->vm()->gpu()->num_gpus() : 0;
+      });
+  if (applied.failed())
+    return Result::failure();
+  if (applied.value() != count)
+    return emit_error.emit() << "cannot apply gpus_per_node to the simulation config";
+  return std::move(rewritten.value());
+}
+
+FailureOr<std::string> json_with_plugin_enabled(std::string_view json, std::string_view plugin,
+                                                const util::DiagnosticEmitter &emit_error) {
+  if (!is_valid_plugin_name(plugin))
+    return emit_error.emit() << "invalid plugin name '" << plugin
+                             << "'; allowed: letters, digits, '_', '-'";
+
+  FailureOr<std::string> plugins = json_top_level_field(json, "plugins", emit_error);
+  if (plugins.failed())
+    return Result::failure();
+  if (plugins.value().empty()) {
+    std::string plugin_object = "{\"";
+    plugin_object.append(plugin).append("\": {}}");
+    return set_top_level_field(json, "plugins", plugin_object, emit_error);
+  }
+  if (!is_json_object(plugins.value()))
+    return emit_error.emit() << "cannot apply plugin: simulation config plugins must be an object";
+
+  FailureOr<std::string> existing_plugin =
+      json_top_level_field(plugins.value(), plugin, emit_error);
+  if (existing_plugin.failed())
+    return Result::failure();
+  if (!existing_plugin.value().empty())
+    return std::string(json);
+
+  FailureOr<std::string> rewritten_plugins =
+      set_top_level_field(plugins.value(), plugin, "{}", emit_error);
+  if (rewritten_plugins.failed())
+    return Result::failure();
+  return set_top_level_field(json, "plugins", rewritten_plugins.value(), emit_error);
+}
+
 } // namespace
 
 FailureOr<std::string> json_with_cpu_thread_budget(std::string_view json, uint32_t budget,
@@ -71,6 +162,40 @@ FailureOr<std::string> json_with_launch_overrides(std::string_view json,
                                                   const LaunchOverrides &overrides,
                                                   const util::DiagnosticEmitter &emit_error) {
   std::string rewritten(json);
+  if (overrides.exec_mode) {
+    auto result =
+        set_top_level_field(rewritten, "exec_mode", json_string(*overrides.exec_mode), emit_error);
+    if (result.failed())
+      return Result::failure();
+    rewritten = std::move(result.value());
+    auto applied = with_parsed_simulation_config_json(
+        rewritten, rocjitsu::kEmbeddedSchema, emit_error,
+        [](const fb::SimulationConfig *config) -> FailureOr<std::string> {
+          return config->exec_mode() ? config->exec_mode()->str() : std::string{};
+        });
+    if (applied.failed())
+      return Result::failure();
+    if (applied.value() != *overrides.exec_mode)
+      return emit_error.emit() << "cannot apply exec_mode to the simulation config";
+  }
+  if (overrides.gpus_per_node) {
+    auto result = json_with_gpu_count(rewritten, *overrides.gpus_per_node, emit_error);
+    if (result.failed())
+      return Result::failure();
+    rewritten = std::move(result.value());
+  }
+  if (!overrides.plugins.empty()) {
+    for (const std::string &plugin : overrides.plugins) {
+      auto result = json_with_plugin_enabled(rewritten, plugin, emit_error);
+      if (result.failed())
+        return Result::failure();
+      rewritten = std::move(result.value());
+    }
+    auto result = set_top_level_field(rewritten, "require_all_plugins", "true", emit_error);
+    if (result.failed())
+      return Result::failure();
+    rewritten = std::move(result.value());
+  }
   if (overrides.cpu_thread_budget) {
     auto result = json_with_cpu_thread_budget(rewritten, *overrides.cpu_thread_budget, emit_error);
     if (result.failed())

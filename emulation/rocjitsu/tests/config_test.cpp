@@ -3105,7 +3105,8 @@ TEST(ConfigLoaderTest, RoundTripsRuntimeConfigHandoff) {
   dbt.enabled = true;
   dbt.host.gpu_id = 28851;
 
-  ASSERT_TRUE(config::write_dbt_runtime_config_handoff("/tmp/config.json", dbt, getpid()));
+  const std::filesystem::path invocation_dir = rocjitsu::rpc_invocation_runtime_dir(getpid());
+  ASSERT_TRUE(config::write_dbt_runtime_config_handoff("/tmp/config.json", dbt, invocation_dir));
   std::ifstream handoff(rocjitsu::rpc_invocation_config_file_path(getpid()));
   const std::string contents((std::istreambuf_iterator<char>(handoff)),
                              std::istreambuf_iterator<char>());
@@ -3215,6 +3216,34 @@ TEST(EffectiveConfigTest, CombinesWaitCheckingAndBudgetWithoutChangingOtherField
           .failed());
 }
 
+TEST(EffectiveConfigTest, AddsLaunchPluginsAndRequiresThem) {
+  const std::string json = R"({"max_ticks":1})";
+  auto rewritten =
+      config::json_with_launch_overrides(json, {.plugins = {"race", "instruction-mix"}});
+  ASSERT_TRUE(rewritten.succeeded());
+  EXPECT_NE(rewritten.value().find(R"("plugins": {"instruction-mix": {},"race": {}})"),
+            std::string::npos);
+  EXPECT_NE(rewritten.value().find(R"("require_all_plugins": true)"), std::string::npos);
+}
+
+TEST(EffectiveConfigTest, KeepsExistingPluginConfigWhenLaunchPluginRepeatsIt) {
+  const std::string json = R"({"plugins":{"logging":{"interval":7}}})";
+  auto rewritten = config::json_with_launch_overrides(json, {.plugins = {"race", "logging"}});
+  ASSERT_TRUE(rewritten.succeeded());
+  EXPECT_NE(rewritten.value().find(R"("race": {})"), std::string::npos);
+  EXPECT_NE(rewritten.value().find(R"("logging":{"interval":7})"), std::string::npos);
+  EXPECT_EQ(rewritten.value().find(R"("logging": {})"), std::string::npos);
+  EXPECT_NE(rewritten.value().find(R"("require_all_plugins": true)"), std::string::npos);
+}
+
+TEST(EffectiveConfigTest, RejectsInvalidLaunchPluginName) {
+  util::StringDiagnostic diagnostic;
+  auto rewritten = config::json_with_launch_overrides(R"({"plugins":{}})", {.plugins = {"../race"}},
+                                                      diagnostic.emitter());
+  EXPECT_TRUE(rewritten.failed());
+  EXPECT_THAT(diagnostic.message(), testing::HasSubstr("invalid plugin name '../race'"));
+}
+
 TEST(ConfigLoaderTest, WaitCheckingOverridesEveryCuAndGpu) {
   using amdgpu::MemoryWaitDiagnostics;
   using config::WaitChecking;
@@ -3318,8 +3347,9 @@ TEST(EffectiveConfigTest, WritesTheLaunchCopyBesideTheInvocationHandoff) {
   ASSERT_TRUE(source_before_result.succeeded()) << source_before_diagnostic.message();
   const auto source_before = std::move(source_before_result).value();
 
-  FailureOr<std::string> copy =
-      config::write_effective_config(source, {.cpu_thread_budget = 12}, getpid());
+  const std::filesystem::path invocation_dir = rocjitsu::rpc_invocation_runtime_dir(getpid());
+  FailureOr<std::string> copy = config::write_effective_config(
+      source, {.cpu_thread_budget = 12}, invocation_dir, config_diagnostic.emitter());
   ASSERT_TRUE(copy.succeeded());
 
   EXPECT_EQ(copy.value(),
@@ -3392,8 +3422,9 @@ TEST(EffectiveConfigTest, GraphFailureDoesNotPublishLaunchCopy) {
     test::ScopedEnvironmentVariable runtime_dir("ROCJITSU_RUNTIME_DIR", runtime.path());
     std::vector<std::string> messages;
     auto sink = [&](std::string_view message) { messages.emplace_back(message); };
-    const auto result = config::write_effective_config(source.path(), {.local_node = "missing"},
-                                                       getpid(), util::DiagnosticEmitter(sink));
+    const std::filesystem::path invocation_dir = rocjitsu::rpc_invocation_runtime_dir(getpid());
+    const auto result = config::write_effective_config(
+        source.path(), {.local_node = "missing"}, invocation_dir, util::DiagnosticEmitter(sink));
     EXPECT_TRUE(result.failed());
     ASSERT_EQ(messages.size(), 1u);
     EXPECT_THAT(messages.front(), testing::HasSubstr(invalid_graph ? "duplicate system node id"
@@ -3426,9 +3457,10 @@ TEST(EffectiveConfigTest, ReportsAnUnwritableRuntimeDirectory) {
   test::ScopedEnvironmentVariable runtime_dir("ROCJITSU_RUNTIME_DIR", blocked_root.string());
 
   util::StringDiagnostic diagnostic;
-  FailureOr<std::string> written =
-      config::write_effective_config(test::config_path("gfx942_cdna3.json"),
-                                     {.cpu_thread_budget = 12}, getpid(), diagnostic.emitter());
+  const std::filesystem::path invocation_dir = rocjitsu::rpc_invocation_runtime_dir(getpid());
+  FailureOr<std::string> written = config::write_effective_config(
+      test::config_path("gfx942_cdna3.json"), {.cpu_thread_budget = 12}, invocation_dir,
+      diagnostic.emitter());
   EXPECT_TRUE(written.failed());
   EXPECT_THAT(diagnostic.message(), testing::HasSubstr("cannot create runtime directory"));
 }
@@ -3520,7 +3552,8 @@ TEST(ConfigLoaderTest, RejectsUnresolvedAutomaticDbtHandoffWrite) {
   config::DbtGuestConfig dbt;
   dbt.enabled = true;
 
-  EXPECT_FALSE(config::write_dbt_runtime_config_handoff("/tmp/config.json", dbt, getpid()));
+  const std::filesystem::path invocation_dir = rocjitsu::rpc_invocation_runtime_dir(getpid());
+  EXPECT_FALSE(config::write_dbt_runtime_config_handoff("/tmp/config.json", dbt, invocation_dir));
   EXPECT_FALSE(std::filesystem::exists(rocjitsu::rpc_invocation_config_file_path(getpid())));
 }
 
@@ -3534,7 +3567,8 @@ TEST(ConfigLoaderTest, RuntimeConfigHandoffReportsDirectoryCreationFailure) {
   dbt.enabled = true;
   dbt.host.gpu_id = 28851;
 
-  EXPECT_FALSE(config::write_dbt_runtime_config_handoff("/tmp/config.json", dbt, getpid()));
+  const std::filesystem::path invocation_dir = rocjitsu::rpc_invocation_runtime_dir(getpid());
+  EXPECT_FALSE(config::write_dbt_runtime_config_handoff("/tmp/config.json", dbt, invocation_dir));
 }
 
 TEST(ConfigLoaderTest, RejectsEmptyResolvedGpuIdLineForEnabledDbt) {
@@ -3697,6 +3731,55 @@ TEST(ConfigLoaderTest, RejectsMisspelledDbtExecutionBackend) {
   auto result = config::load_dbt_guest_config_from_file(file.path(), config_diagnostic.emitter());
   EXPECT_TRUE(result.failed());
   EXPECT_THAT(config_diagnostic.message(), testing::HasSubstr("Failed to parse JSON config"));
+}
+
+TEST(ConfigLoaderTest, AllowsPluginFieldsDuringStrictDbtValidation) {
+  test::ScopedTempFile file;
+  ASSERT_TRUE(write_temp_config(file, R"({
+        "plugins": {"race": {}},
+        "require_all_plugins": true,
+        "dbt_guest": {
+          "enabled": false,
+          "execution_backend": "hardware"
+        }
+      })"));
+
+  util::StringDiagnostic diagnostic;
+  auto loaded = config::load_dbt_guest_config_from_file(file.path(), diagnostic.emitter());
+  EXPECT_TRUE(loaded.succeeded()) << diagnostic.message();
+}
+
+TEST(ConfigLoaderTest, AllowsEscapedPluginFieldsDuringStrictDbtValidation) {
+  test::ScopedTempFile file;
+  ASSERT_TRUE(write_temp_config(file, R"({
+        "plugin\u0073": {"race": {}},
+        "require_all_plugin\u0073": true,
+        "dbt_guest": {
+          "enabled": false,
+          "execution_backend": "hardware"
+        }
+      })"));
+
+  util::StringDiagnostic diagnostic;
+  auto loaded = config::load_dbt_guest_config_from_file(file.path(), diagnostic.emitter());
+  EXPECT_TRUE(loaded.succeeded()) << diagnostic.message();
+}
+
+TEST(ConfigLoaderTest, StillRejectsMisspelledDbtFieldsWithPluginFieldsPresent) {
+  test::ScopedTempFile file;
+  ASSERT_TRUE(write_temp_config(file, R"({
+        "plugins": {"race": {}},
+        "require_all_plugins": true,
+        "dbt_guest": {
+          "enabled": false,
+          "execution_backed": "hardware"
+        }
+      })"));
+
+  util::StringDiagnostic diagnostic;
+  auto loaded = config::load_dbt_guest_config_from_file(file.path(), diagnostic.emitter());
+  EXPECT_TRUE(loaded.failed());
+  EXPECT_THAT(diagnostic.message(), testing::HasSubstr("Failed to parse JSON config"));
 }
 
 TEST(ConfigLoaderTest, ValidatesSimulatorDbtGuestDeviceLimits) {
