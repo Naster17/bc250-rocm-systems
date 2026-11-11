@@ -74,6 +74,8 @@ Full documentation for ROCm Compute Profiler is available at [https://rocm.docs.
 
 * `--set` selects metric IDs, which `--list-sets` lists, for example `compute.salu_util` instead of `11.2.2`. After `--set`, analyze shows only the set's metrics, wherever they appear.
 
+* The System Speed-of-Light panel (`-b 2`, `-b sol`) shows three tables on every architecture: GPU Speed-of-Light, Compute Throughput, and Memory Throughput. Metric IDs in block 2 are renumbered, for example SALU Utilization is `2.2.7` on gfx942, and a numeric ID you type means the ID analyze shows; workloads saved by earlier versions show the same panels.
+
 ### Removed
 
 * Removed the experimental `--gui` and `--tui` analyze modes and the `--random-port` option. Use the default CLI analyze mode for terminal output, or `--output-format db` to explore results in ROCm Optiq.
@@ -104,6 +106,8 @@ Full documentation for ROCm Compute Profiler is available at [https://rocm.docs.
 * Removed the experimental `--torch-trace`, `--triton-trace`, `--ml-api-trace`, `--list-torch-operators`, `--list-triton-operators`, `--torch-operator`, and `--triton-operator` options. Use `--trace-ml-api`, `--list-operators`, and `--operator` instead.
 
 * Removed the gfx908 `compute_thruput_flops` set, whose metrics MI100 has no counters for; `--set compute_thruput_flops` now fails on gfx908.
+
+* Removed rows that the new tables don't include from the System Speed-of-Light panel, such as Wavefront Occupancy and the L2-Fabric latencies; their own panels still show them, for example Wavefront Occupancy as `7.2.7` on gfx942. On gfx115x, Wavefront Occupancy and Wave Issue Wait, and on gfx1250, Wavefront Occupancy, the GL2-to-DRAM latencies, instruction fetch latency, and LDS bank conflicts per access, are no longer shown.
 
 ### Optimized
 
