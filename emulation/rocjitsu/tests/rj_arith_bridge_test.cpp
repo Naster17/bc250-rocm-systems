@@ -10227,6 +10227,10 @@ TEST(ArithBridgeTest, CdnaBinarySelectionNaNPolicy) {
 } // namespace rocjitsu::amdgpu
 
 namespace rocjitsu::amdgpu {
+namespace {} // namespace
+} // namespace rocjitsu::amdgpu
+
+namespace rocjitsu::amdgpu {
 namespace {
 TEST(ArithBridgeTest, CdnaBf16MfmaFusedCancellation) {
   for (bool scalar : {false, true}) {
