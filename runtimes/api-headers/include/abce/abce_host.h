@@ -866,6 +866,8 @@ typedef struct abce_plan_t {
   uint64_t fan_in_count;
   void* coordination_signal;
   uint64_t coordination_initial_value;
+  // Carried from abce_signal_ref_t::host_store_readback for submit.
+  bool coordination_readback;
 
   // Set of abce_transfer_kind_t values present in the batch, as
   // abce_transfer_kind_bit() flags. A batch may legitimately mix kinds (an H2D
@@ -933,6 +935,7 @@ static inline abce_transfer_kind_t abce_plan_uniform_transfer_kind(const abce_pl
 #define ABCE_MAX_COPIES_PER_ENGINE 8u
 #define ABCE_BROADCAST_MAX_SIZE_DEFAULT ((size_t)(16u * ABCE_KI))
 #define ABCE_MULTICAST_MAX_DSTS ((uint32_t)ABCE_KI)
+#define ABCE_MAP_INLINE_OPS 16u
 #define ABCE_BROADCAST_MAX_DSTS 2u
 
 // Retuning knobs (bytes). The linear back-to-back window and the
@@ -1523,6 +1526,11 @@ static inline bool abce_copy_orchestrator_is_back_to_back_batch(
       if (copies[copy_idx].kind != ABCE_OP_KIND_LINEAR) return false;
   }
   if (metadata->linear_batch_mode == ABCE_LINEAR_BATCH_MODE_FORCE_BACK_TO_BACK) return true;
+  // gfx125+ fused copies each carry their own signal, so copies sharing a ring
+  // complete one after another: on MI455 a 4-copy back-to-back batch costs about
+  // 7 us per extra copy, and fanning the same copies out beats ROCr's 16-64 KiB
+  // back-to-back window by about 20%.
+  if (orchestrator->is_gfx125plus) return false;
   return abce_back_to_back_bytes(copies, num_copies) <= abce_linear_b2b_max_total();
 }
 
@@ -1894,6 +1902,7 @@ static inline abce_status_t abce_copy_orchestrator_map_copy(
   const uint64_t candidates = abce_copy_orchestrator_candidates(orchestrator, metadata);
   if (!candidates) return ABCE_STATUS_NO_ENGINE;
   out_plan->execution_descriptor = metadata->execution_descriptor;
+  out_plan->coordination_readback = metadata->out.host_store_readback;
 
   uint32_t capacity = 0;
   for (uint32_t copy_idx = 0; copy_idx < num_copies; ++copy_idx) {
@@ -1908,8 +1917,18 @@ static inline abce_status_t abce_copy_orchestrator_map_copy(
         abce_classify_transfer(&copies[copy_idx].src_end, &copies[copy_idx].dst_end));
   }
 
-  abce_engine_op_t* local_ops = (abce_engine_op_t*)calloc(capacity, sizeof(abce_engine_op_t));
-  if (!local_ops) return ABCE_STATUS_RESOURCE_EXHAUSTED;
+  // A typical batch is one op per peer; keep those off the heap, which costs a
+  // calloc/free pair on every copy otherwise.
+  abce_engine_op_t inline_ops[ABCE_MAP_INLINE_OPS];
+  abce_engine_op_t* heap_ops = NULL;
+  abce_engine_op_t* local_ops = inline_ops;
+  if (capacity <= ABCE_MAP_INLINE_OPS) {
+    memset(inline_ops, 0, capacity * sizeof(abce_engine_op_t));
+  } else {
+    heap_ops = (abce_engine_op_t*)calloc(capacity, sizeof(abce_engine_op_t));
+    if (!heap_ops) return ABCE_STATUS_RESOURCE_EXHAUSTED;
+    local_ops = heap_ops;
+  }
 
   uint32_t num_ops = 0;
   const bool force_back_to_back =
@@ -1919,7 +1938,7 @@ static inline abce_status_t abce_copy_orchestrator_map_copy(
           ? abce_copy_orchestrator_back_to_back_engine(orchestrator, &copies[0], candidates)
           : ABCE_MAX_ENGINES;
   if (force_back_to_back && fixed_engine == ABCE_MAX_ENGINES) {
-    free(local_ops);
+    free(heap_ops);
     out_plan->failed_op = 0;
     return ABCE_STATUS_NO_LEGAL_ENGINE;
   }
@@ -1927,11 +1946,11 @@ static inline abce_status_t abce_copy_orchestrator_map_copy(
   if (!abce_copy_orchestrator_decompose(orchestrator, copies, num_copies, metadata, candidates,
                                         force_back_to_back, fixed_engine, local_ops, &num_ops,
                                         capacity, &status, &out_plan->failed_op)) {
-    free(local_ops);
+    free(heap_ops);
     return status;
   }
   if (num_ops == 0) {
-    free(local_ops);
+    free(heap_ops);
     return ABCE_STATUS_INVALID_ARGUMENT;
   }
 
@@ -1993,7 +2012,7 @@ static inline abce_status_t abce_copy_orchestrator_map_copy(
   const bool coordinator_drains_fan_in = out_plan->multi && out_plan->epilogue_required;
   if (coordinator_drains_fan_in) {
     if (!metadata->out.coordination_scratch) {
-      free(local_ops);
+      free(heap_ops);
       return ABCE_STATUS_MISSING_COORDINATION_SCRATCH;
     }
     // The gfx125+ 64-bit poll encodes only addr[63:3], so a misaligned
@@ -2001,7 +2020,7 @@ static inline abce_status_t abce_copy_orchestrator_map_copy(
     ABCE_ASSERT(((uintptr_t)metadata->out.coordination_scratch % 8) == 0 &&
                 "coordination_scratch must be 8-byte aligned");
     if (out_plan->fan_in_count > UINT32_MAX) {
-      free(local_ops);
+      free(heap_ops);
       return ABCE_STATUS_TOO_MANY_OPERATIONS;
     }
     out_plan->coordination_signal = metadata->out.coordination_scratch;
@@ -2012,7 +2031,7 @@ static inline abce_status_t abce_copy_orchestrator_map_copy(
     if (out_plan->multi || out_plan->fan_in_count > 1) {
       if (metadata->out.completion_value > UINT32_MAX ||
           out_plan->fan_in_count > UINT32_MAX - metadata->out.completion_value) {
-        free(local_ops);
+        free(heap_ops);
         return ABCE_STATUS_TOO_MANY_OPERATIONS;
       }
       out_plan->coordination_initial_value =
@@ -2026,7 +2045,7 @@ static inline abce_status_t abce_copy_orchestrator_map_copy(
                                                      &out_plan->frames[frame_idx]);
     const size_t frame_bytes = abce_frame_composer_frame_bytes(&orchestrator->composer, &job);
     if (frame_bytes > UINT32_MAX) {
-      free(local_ops);
+      free(heap_ops);
       return ABCE_STATUS_TOO_MANY_OPERATIONS;
     }
     out_plan->frames[frame_idx].bytes = (uint32_t)frame_bytes;
@@ -2041,7 +2060,7 @@ static inline abce_status_t abce_copy_orchestrator_map_copy(
 
   char* scratch = abce_acquire_packet_scratch(total_bytes);
   if (!scratch && total_bytes > 0) {
-    free(local_ops);
+    free(heap_ops);
     return ABCE_STATUS_RESOURCE_EXHAUSTED;
   }
   size_t scratch_offset = 0;
@@ -2059,7 +2078,7 @@ static inline abce_status_t abce_copy_orchestrator_map_copy(
     scratch_offset += frame->bytes;
   }
 
-  free(local_ops);
+  free(heap_ops);
   out_plan->valid = true;
   return ABCE_STATUS_OK;
 }
@@ -2131,9 +2150,13 @@ static inline abce_status_t abce_copy_orchestrator_submit(abce_copy_orchestrator
   // Arm the coordination word only after every reservation succeeds. No frame is
   // visible to hardware yet, so a deterministic/acquire failure cannot strand a
   // gate or a fan-in count that nothing will ever clear.
+  // Host stores the engines read besides the frames themselves. The signal they
+  // land in may be in device memory behind a write-combined BAR.
+  bool stored_engine_inputs = false;
   if (plan->multi || plan->fan_in_count > 1) {
     __atomic_store_n((uint64_t*)plan->coordination_signal, plan->coordination_initial_value,
                      __ATOMIC_RELEASE);
+    stored_engine_inputs = true;
   }
 
   // Stamp the execution descriptor here, not in the map phase: a client may
@@ -2144,11 +2167,37 @@ static inline abce_status_t abce_copy_orchestrator_submit(abce_copy_orchestrator
     __atomic_store_n((uint32_t*)plan->execution_descriptor,
                      abce_copy_orchestrator_describe_execution(orchestrator, plan),
                      __ATOMIC_RELEASE);
+    stored_engine_inputs = true;
   }
 
+  bool copied_with_memcpy = false;
+  const void* ring_readback_word = NULL;
   for (uint32_t pending_idx = 0; pending_idx < num_pending; ++pending_idx) {
     const abce_plan_frame_t* frame = &plan->frames[pending_idx];
-    memcpy(pending[pending_idx].buffer, frame->packets, frame->bytes);
+    abce_submit_pending_t* entry = &pending[pending_idx];
+    abce_ring_fill(entry->ring, entry->buffer, frame->packets, frame->bytes, entry->reserve_bytes);
+    copied_with_memcpy = copied_with_memcpy || !entry->ring->config.write;
+    if (entry->ring->config.readback_before_doorbell)
+      ring_readback_word = entry->buffer + entry->reserve_bytes - sizeof(uint64_t);
+  }
+  // One fence orders every memcpy'd frame, including any non-temporal stores a
+  // large memcpy issues, and the stores above ahead of all the doorbells below.
+  // A ring writer orders only its own stores, so a plan that armed a
+  // coordination word still fences. Fencing per doorbell instead makes each
+  // fence wait for the previous ring's uncached doorbell store to drain,
+  // serializing a fan-out.
+  if (copied_with_memcpy || stored_engine_inputs) abce_ring_host_store_fence();
+  // Stores through a BAR can still be in flight when a doorbell, which takes
+  // another path, reaches the engine. Measured on MI300X: a device-memory ring
+  // occasionally ran stale bytes and skipped the copy, and a fenced coordination
+  // store into a device-memory signal arrived after the engines read it. One
+  // read cannot pass the stores before it and drains every earlier store to the
+  // device, so reading back the last ring line written covers the coordination
+  // word too.
+  if (ring_readback_word) {
+    abce_ring_read_back(ring_readback_word);
+  } else if (plan->coordination_readback && (plan->multi || plan->fan_in_count > 1)) {
+    abce_ring_read_back(plan->coordination_signal);
   }
 
   // Publish in the same global ring order used for acquisition. Publishing in
@@ -2156,7 +2205,8 @@ static inline abce_status_t abce_copy_orchestrator_submit(abce_copy_orchestrator
   // whose coordinator choices produce opposite frame orders.
   for (uint32_t acquired_idx = 0; acquired_idx < num_pending; ++acquired_idx) {
     abce_submit_pending_t* acquired_entry = &pending[acquired_frames[acquired_idx]];
-    if (!abce_status_is_ok(abce_ring_release(acquired_entry->ring, &acquired_entry->reservation)))
+    if (!abce_status_is_ok(
+            abce_ring_release_ordered(acquired_entry->ring, &acquired_entry->reservation)))
       return ABCE_STATUS_RING_UNAVAILABLE;
   }
 

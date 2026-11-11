@@ -453,6 +453,11 @@ ring or **fans out** across many:
   serializes exactly as many bytes as 8 × 64 KiB, so a 256 KiB/copy window let an 8 × 256 KiB
   batch (2 MiB total) serialize onto one ring at 51.6 µs where fan-out finished in 32.3 µs — the
   one size at which ABCE lost to the stock blit path.
+- gfx125+ never picks back-to-back on its own. Its fused copies each carry their own signal, so
+  copies sharing a ring complete one after another: on MI455 (4 ranks, 16 KiB all-gather) a
+  back-to-back batch cost 10.8, 18.4 and 24.3 µs for 2, 3 and 4 copies, while the same copies
+  fanned out stayed near 14.7 µs, and fan-out beat ROCr's 16–64 KiB back-to-back window by about
+  20%. `ABCE_LINEAR_BATCH_MODE_FORCE_BACK_TO_BACK` still applies.
 - Fan-out is parallel-first: every legal ring takes a copy before any ring takes a second, and
   only when copies outnumber rings do the extras prefer their affinity ring. Very large copies
   (≥ 1 GiB) instead group `ABCE_MAX_COPIES_PER_ENGINE` copies per ring.
@@ -635,9 +640,11 @@ the commit side) where the C++ version took them as template parameters instanti
    disjoint regions with no lock. The region is zeroed, which both satisfies the builders'
    zeroed-buffer contract and turns any unused pad tail into NOPs.
 2. **Write** — the caller fills the region.
-3. **`abce_ring_release()`** — spin until the commit cursor reaches this reservation's start, then
-   advance the hardware write pointer and ring the doorbell, then release the next producer. The
-   doorbell is thus monotone even when producers finish writing out of order.
+3. **`abce_ring_release()`** — order the caller's writes to the region ahead of the doorbell (a
+   store fence, or a readback for a ring with `readback_before_doorbell`), spin until the commit
+   cursor reaches this reservation's start, then advance the hardware write pointer and ring the
+   doorbell, then release the next producer. The doorbell is thus monotone even when producers
+   finish writing out of order.
 
 On device, publish and the commit hand-off use store waits, not release fences: the ring is
 uncached and the queue words are written through, so no L2 writeback is needed. The caller
@@ -647,7 +654,41 @@ A producer may keep the engine read index it last loaded (`abce_ring_control_t::
 and read the engine's own word only when that value says the ring is full; the read index only
 grows, so a stale value can understate free space but never overstate it. The device ring does
 this, because the queue's read pointer is in system memory and reading it costs a kernel about a
-microsecond, a quarter of a submit.
+microsecond, a quarter of a submit. The host ring does too: the engine keeps writing that word, so
+the host's copy of its cache line is usually stale, and through the HSA adapter each load is also
+two runtime calls.
+
+On the host, submit issues one store fence after copying every frame and before the first
+doorbell, rather than one per doorbell, and then publishes each frame without the fence
+`abce_ring_release()` would add. A fence waits for the previous ring's uncached doorbell store to
+drain, so fencing per doorbell serialized a fan-out's submissions. Publication itself only orders
+the write pointer ahead of the doorbell, with a release fence between the two stores as ROCr's
+`SdmaQueue::RingDoorbell` does.
+
+A ring in device memory is reached through a write-combined BAR, where zeroing a region and then
+copying into it writes every byte twice in partial lines. Such a ring sets
+`abce_ring_config_t::write` (through `abce_hsa_ring_options_t::write` for the HSA adapter) with
+`align64`: acquire then leaves the region alone and submit, padding and cancel each write a
+region once, in whole lines, through the hook, which also orders its own stores (MOVDIR64B
+closes the WC buffer). `abce_hsa_ring_options_t::direct_queue_words` drives the queue through its
+read pointer, write pointer and doorbell words instead of runtime calls, where the runtime's
+doorbell is a plain store. On MI455 a device ring cut the engine-side time of a 16 KiB
+four-destination multicast from 7.6 to 7.2 µs and of a 2 MiB fan-out from 12.4 to 10.8 µs; the
+two 64-byte BAR lines per small frame cost the host about as much as the first saves.
+
+Stores through a BAR can still be in flight when a doorbell, which reaches the engine by another
+path, arrives. An AQL packet processor tolerates that because it waits for a valid header; an
+SDMA engine runs whatever precedes the write index. On MI300X a device ring without a readback
+occasionally ran stale bytes (NOPs, so the copy was skipped and its signal never completed; after
+a wrap they could be old packets), and a fenced coordination store into a device-memory signal
+reached it after the engines read it. So where `HSA_AMD_AGENT_INFO_PCIE_STORES_NEED_FLUSH` reports
+that the agent's memory is reached over PCIe, a device ring also sets `readback_before_doorbell`,
+and a client whose completion signal lives in device memory sets
+`abce_signal_ref_t::host_store_readback`: submit then reads back the last line or word it stored,
+once per submission, before any doorbell. A host that reaches the GPU's memory over xGMI needs
+neither.
+A read cannot pass earlier stores to the same device, so one covers the frames and the
+coordination word together.
 
 A payload that would straddle the physical ring end is handled by reserving and publishing the
 wrap tail as a *separate* NOP region, then retrying the payload at offset zero. Keeping the
@@ -699,7 +740,7 @@ Read once at first use, decimal or `0x` hex, so thresholds can be swept without 
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ABCE_LINEAR_B2B_MAX_TOTAL` | 512 KiB | batch total at or below which a batch stays back-to-back on one ring |
+| `ABCE_LINEAR_B2B_MAX_TOTAL` | 512 KiB | batch total at or below which a batch stays back-to-back on one ring (pre-gfx125 only) |
 | `ABCE_BROADCAST_MAX` | 16 KiB | size below which pre-gfx125+ multicast uses broadcast packets |
 
 ## 11. Verified behavior

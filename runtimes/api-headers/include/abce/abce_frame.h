@@ -66,6 +66,13 @@ typedef struct abce_signal_ref_t {
   // protocol drains the word back to zero (the coordinator subtracts the gate,
   // each frame decrements the count), so a completed plan leaves no residue.
   void* coordination_scratch;
+  // The signal lives where a host store crosses a BAR (device memory on a
+  // discrete GPU) and can reach it after the engines read it, even fenced. Submit
+  // then reads back what it stored into the signal before the doorbell; the read
+  // cannot pass the store. An HSA client sets it for a signal in the agent's
+  // memory from HSA_AMD_AGENT_INFO_PCIE_STORES_NEED_FLUSH; host-memory signals
+  // leave it false.
+  bool host_store_readback;
 } abce_signal_ref_t;
 
 static inline abce_signal_ref_t abce_signal_ref_make(void* value, uint64_t completion_value,
@@ -78,6 +85,7 @@ static inline abce_signal_ref_t abce_signal_ref_make(void* value, uint64_t compl
   ref.event_mailbox = event_mailbox;
   ref.event_id = event_id;
   ref.coordination_scratch = coordination_scratch;
+  ref.host_store_readback = false;
   return ref;
 }
 

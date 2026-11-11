@@ -181,6 +181,25 @@ static inline void abce_ring_commit_store(uint64_t* commit_cursor, uint64_t valu
 #endif  // __HIP_DEVICE_COMPILE__
 }
 
+// A host producer that finds room through another producer's cached read index
+// reuses ring bytes on the strength of that producer's load of the engine's
+// word, so the cache passes that load's ordering on.
+static inline uint64_t abce_ring_cached_read_load(const uint64_t* cached_read_index) {
+#if defined(__HIP_DEVICE_COMPILE__)
+  return abce_ring_cursor_load(cached_read_index);
+#else
+  return abce_ring_cursor_load_acquire(cached_read_index);
+#endif  // __HIP_DEVICE_COMPILE__
+}
+
+static inline void abce_ring_cached_read_store(uint64_t* cached_read_index, uint64_t read_index) {
+#if defined(__HIP_DEVICE_COMPILE__)
+  abce_ring_cursor_store(cached_read_index, read_index);
+#else
+  abce_ring_cursor_store_release(cached_read_index, read_index);
+#endif  // __HIP_DEVICE_COMPILE__
+}
+
 // Backs off inside a spin-wait: sleeps a wave on device, yields the CPU on host.
 static inline void abce_ring_pause(void) {
 #if defined(__HIP_DEVICE_COMPILE__)
@@ -331,12 +350,12 @@ static inline abce_status_t abce_ring_reserve_(const abce_ring_producer_t* produ
         fold_padding ? pad_bytes + bytes : (pad_bytes != 0 ? pad_bytes : bytes);
     const uint64_t next = current + reservation_bytes;
     bool has_room = producer->cached_read_index &&
-                    abce_ring_can_write_upto(abce_ring_cursor_load(producer->cached_read_index),
-                                             size, next);
+                    abce_ring_can_write_upto(
+                        abce_ring_cached_read_load(producer->cached_read_index), size, next);
     if (!has_room) {
       const uint64_t read_index = producer->load_read_index(producer->user_data);
       if (producer->cached_read_index)
-        abce_ring_cursor_store(producer->cached_read_index, read_index);
+        abce_ring_cached_read_store(producer->cached_read_index, read_index);
       has_room = abce_ring_can_write_upto(read_index, size, next);
       if (!has_room && !block) return ABCE_STATUS_NOT_READY;
     }
