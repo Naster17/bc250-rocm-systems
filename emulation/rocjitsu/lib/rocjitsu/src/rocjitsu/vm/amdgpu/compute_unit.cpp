@@ -1090,8 +1090,8 @@ VmAccessOutcome ComputeUnitCore::route_memory_inst(Instruction *inst, Wavefront 
   uint64_t flat_dds_lane_mask = 0;
   std::array<uint64_t, 64> pre_routing_address_storage;
   std::span<const uint64_t> pre_routing_addresses;
-  if (inst->data()->tag() == GLOBAL_MEM && inst->mnemonic().starts_with("flat_") &&
-      shared_aperture_base_ != 0) {
+  if (inst->data()->tag() == GLOBAL_MEM &&
+      inst->amdgpu_memory_addressing() == MemoryAddressing::Flat && shared_aperture_base_ != 0) {
     auto &d = *inst->data_as<VectorMemState>();
     // The wavefront is the authority on its own width. VectorMemState::wf_size
     // is set by whoever built the state, and the DS paths leave it at its
@@ -1158,7 +1158,8 @@ VmAccessOutcome ComputeUnitCore::route_memory_inst(Instruction *inst, Wavefront 
     }
   }
 
-  if (decoded_route_tag == GLOBAL_MEM && inst->mnemonic().starts_with("flat_")) {
+  if (decoded_route_tag == GLOBAL_MEM &&
+      inst->amdgpu_memory_addressing() == MemoryAddressing::Flat) {
     auto &d = *inst->data_as<VectorMemState>();
     if (const auto *issue = inst->amdgpu_memory_issue_info()) {
       const uint64_t requests = transpose_request_lane_mask(d, wf.wf_size());
@@ -1377,7 +1378,7 @@ void ComputeUnitCore::track_memory_wait(Instruction &inst, Wavefront &wf) {
 
   // Source checks precede this pure FLAT domain calculation. Resolve admission,
   // overwrite ordering and result readiness before execution.
-  const bool flat = inst.mnemonic().starts_with("flat_");
+  const bool flat = inst.amdgpu_memory_addressing() == MemoryAddressing::Flat;
   const auto planned_flat = flat ? MemoryWaitScoreboard::flat_lanes(inst, wf, shared_aperture_base_,
                                                                     shared_aperture_limit_)
                                  : MemoryWaitScoreboard::FlatLanes{};
@@ -1602,24 +1603,31 @@ static_assert(static_cast<uint8_t>(MemoryRoute::LOCAL) == LOCAL_MEM);
 
 namespace {
 
-DecodedMemorySpace decoded_memory_space(std::string_view mnemonic, uint8_t decoded_route_tag) {
-  // Canonical AMDGPU mnemonics carry the encoding family. Keep this decision
-  // separate from the route tag: FLAT and explicit SCRATCH both initially use
-  // the global pipeline, but a plugin must be able to tell them apart.
-  if (mnemonic.starts_with("flat_"))
+DecodedMemorySpace decoded_memory_space(const Instruction &inst, uint8_t decoded_route_tag) {
+  // The decoded addressing family stays unchanged when FLAT is routed to LDS.
+  switch (inst.amdgpu_memory_addressing()) {
+  case MemoryAddressing::Flat:
     return DecodedMemorySpace::FLAT;
-  if (mnemonic.starts_with("scratch_") || mnemonic.starts_with("s_scratch_"))
+  case MemoryAddressing::Scratch:
     return DecodedMemorySpace::SCRATCH;
-  if (mnemonic.starts_with("ds_"))
+  case MemoryAddressing::Lds:
+  case MemoryAddressing::Gds:
+  case MemoryAddressing::DirectLds:
     return DecodedMemorySpace::LOCAL;
-  if (mnemonic.starts_with("global_") || mnemonic.starts_with("buffer_") ||
-      mnemonic.starts_with("tbuffer_") || mnemonic.starts_with("image_"))
-    return DecodedMemorySpace::GLOBAL;
-  if (mnemonic.starts_with("s_"))
+  case MemoryAddressing::Global:
+  case MemoryAddressing::Buffer:
+  case MemoryAddressing::TypedBuffer:
+  case MemoryAddressing::Image:
+    return (inst.flags() & SMEM) ? DecodedMemorySpace::SCALAR : DecodedMemorySpace::GLOBAL;
+  case MemoryAddressing::Scalar:
     return DecodedMemorySpace::SCALAR;
+  case MemoryAddressing::Tensor:
+  case MemoryAddressing::Cluster:
+  case MemoryAddressing::None:
+    break;
+  }
 
-  // Synthetic instructions and future families still get the least-specific
-  // fact routing already knew before it made any changes.
+  // Synthetic instructions may supply only their established pipeline route.
   switch (decoded_route_tag) {
   case SCALAR_MEM:
     return DecodedMemorySpace::SCALAR;
@@ -1643,6 +1651,8 @@ void ComputeUnitCore::report_routed_access(const Instruction &inst, Wavefront &w
   std::vector<ImageSampleFootprint> image_footprints;
   MemoryAccessObservation access;
   access.mnemonic = inst.mnemonic();
+  access.operation = inst.amdgpu_operation();
+  access.addressing = inst.amdgpu_memory_addressing();
   access.pc = wf.pc;
   access.compute_unit_id = id();
   access.dispatch_id = wf.dispatch_id();
@@ -1650,7 +1660,7 @@ void ComputeUnitCore::report_routed_access(const Instruction &inst, Wavefront &w
   access.workgroup_id = wf.wg_id();
   access.wavefront_id = wf.wf_id();
   access.process_id = wf.process_id();
-  access.decoded_space = decoded_memory_space(inst.mnemonic(), decoded_route_tag);
+  access.decoded_space = decoded_memory_space(inst, decoded_route_tag);
   access.normalized_to_local = normalized_to_local;
   access.pre_routing_addresses = pre_routing_addresses;
 
@@ -2130,7 +2140,7 @@ ComputeUnitCore::issue_instruction_impl(Wavefront *active, MaybeAsyncWindow<Enab
       may_submit = false;
       if (admission)
         ++admission->stats.issuer;
-    } else if (admission && matrix_coexecution::async_candidate(inst->mnemonic())) {
+    } else if (admission && matrix_coexecution::async_candidate(*inst)) {
       // Capacity can become available between this check and submit_mma().
       // Skipping lookahead must keep this instruction inline in that case.
       may_submit = false;
@@ -2142,7 +2152,7 @@ ComputeUnitCore::issue_instruction_impl(Wavefront *active, MaybeAsyncWindow<Enab
         may_submit = issuer.has_value();
       }
     }
-    if (may_submit && !window && storage && matrix_coexecution::async_candidate(inst->mnemonic()) &&
+    if (may_submit && !window && storage && matrix_coexecution::async_candidate(*inst) &&
         async_pool().available())
       window = &storage->window.emplace(*this, *active, storage->has_accvgprs);
     if (window) {
@@ -2303,9 +2313,8 @@ ComputeUnitCore::issue_instruction_impl(Wavefront *active, MaybeAsyncWindow<Enab
   }
 
   if (inst->flags() & (INDIRECT_BRANCH | INDIRECT_CALL)) {
-    auto mn = std::string_view(inst->mnemonic());
-    if (mn.find("s_setpc") != std::string_view::npos ||
-        mn.find("s_swappc") != std::string_view::npos) {
+    const Operation operation = inst->amdgpu_operation();
+    if (operation == Operation::S_SETPC_B64 || operation == Operation::S_SWAPPC_B64) {
       const Operand *target_operand = inst->src_operand(0);
       assert(target_operand && "indirect PC instruction must have a target operand");
       uint64_t target = RegisterAccess(*active).read_scalar64(*target_operand);

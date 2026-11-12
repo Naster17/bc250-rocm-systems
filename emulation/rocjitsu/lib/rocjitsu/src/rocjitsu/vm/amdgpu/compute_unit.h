@@ -1365,7 +1365,7 @@ public:
     assert(inst->execute && "instruction execution backend is not linked");
     wf.clear_instruction_execution_error();
     const bool drop_set_vgpr_msb = wf.consume_setreg_vgpr_msb_hazard();
-    if (drop_set_vgpr_msb && std::string_view(inst->mnemonic()) == "s_set_vgpr_msb")
+    if (drop_set_vgpr_msb && inst->amdgpu_operation() == Operation::S_SET_VGPR_MSB)
       return util::Result::success();
     check_static_isa_diagnostics(*inst, wf);
     // The decoded instruction already selects its ISA execution callback.

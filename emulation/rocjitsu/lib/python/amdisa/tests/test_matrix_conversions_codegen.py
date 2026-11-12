@@ -105,11 +105,21 @@ def test_emitted_matrix_header_compiles_standalone(tmp_path):
     source = tmp_path / 'matrix_conversions.cpp'
     source.write_text(
         '#include "matrix_conversions.h"\n'
-        'static_assert(rocjitsu::kMatrixConversionCount == 4);\n',
+        'static_assert(rocjitsu::kMatrixConversionCount == 4);\n'
+        'static_assert(rocjitsu::kMatrixConversions[0].src_operation != '
+        'rocjitsu::amdgpu::Operation::Unknown);\n',
         encoding='utf-8',
     )
     result = subprocess.run(
-        [compiler, '-std=c++20', '-pedantic-errors', '-fsyntax-only', str(source)],
+        [
+            compiler,
+            '-std=c++20',
+            '-pedantic-errors',
+            '-fsyntax-only',
+            '-I',
+            str(_ROCJITSU / 'lib/rocjitsu/src'),
+            str(source),
+        ],
         capture_output=True,
         text=True,
         timeout=60,

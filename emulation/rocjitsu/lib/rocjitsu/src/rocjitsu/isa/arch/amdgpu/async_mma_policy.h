@@ -7,6 +7,7 @@
 #pragma once
 
 #include "rocjitsu/isa/arch/amdgpu/generated/cdna5/opcodes.h"
+#include "rocjitsu/isa/arch/amdgpu/generated/shared/async_inline_operations.h"
 #include "rocjitsu/isa/arch/amdgpu/shared/instruction_encoding.h"
 #include "rocjitsu/isa/instruction.h"
 #include "rocjitsu/isa/isa_traits.h"
@@ -14,7 +15,6 @@
 #include <algorithm>
 #include <bitset>
 #include <optional>
-#include <string_view>
 
 namespace rocjitsu::amdgpu::async_mma_policy {
 
@@ -23,15 +23,22 @@ constexpr bool supported(rj_code_arch_t arch) {
   return arch == ROCJITSU_CODE_ARCH_CDNA4 || arch == ROCJITSU_CODE_ARCH_CDNA5;
 }
 
-inline bool candidate(std::string_view name) {
-  if (name == "v_wmma_f32_32x16x128_f4" || name == "v_wmma_scale_f32_16x16x128_f8f6f4")
-    return true;
-  if (name == "v_mfma_scale_f32_16x16x128_f8f6f4" || name == "v_mfma_scale_f32_32x32x64_f8f6f4" ||
-      name == "v_mfma_f32_16x16x128_f8f6f4" || name == "v_mfma_f32_32x32x64_f8f6f4")
-    return true;
+inline bool candidate(const Instruction &inst) {
+  if (inst.amdgpu_secondary_operation() != Operation::Unknown)
+    return false;
   // Migrated rj-arith handlers consult the issuer's per-instruction error state.
   // Keep them on the issuer until helpers return errors with their issuing PC.
-  return false;
+  switch (inst.amdgpu_operation()) {
+  case Operation::V_WMMA_F32_32X16X128_F4:
+  case Operation::V_WMMA_SCALE_F32_16X16X128_F8F6F4:
+  case Operation::V_MFMA_SCALE_F32_16X16X128_F8F6F4:
+  case Operation::V_MFMA_SCALE_F32_32X32X64_F8F6F4:
+  case Operation::V_MFMA_F32_16X16X128_F8F6F4:
+  case Operation::V_MFMA_F32_32X32X64_F8F6F4:
+    return true;
+  default:
+    return false;
+  }
 }
 
 // Reject non-MFMA encodings on CDNA4, and non-candidates in the CDNA5 allowlist.
@@ -57,11 +64,13 @@ public:
     return (writes & (next.reads | next.writes)).any() || (reads & next.writes).any();
   }
 };
-inline bool ordinary_memory(std::string_view name) {
-  return name.starts_with("global_load_") || name.starts_with("global_store_") ||
-         name.starts_with("buffer_load_") || name.starts_with("buffer_store_");
+inline bool ordinary_memory(const Instruction &inst) {
+  return inline_operation_kind(inst.amdgpu_operation()) == InlineOperationKind::Memory;
 }
 inline bool safe_inline(const Instruction &inst) {
+  const Operation operation = inst.amdgpu_operation();
+  if (operation == Operation::Unknown || inst.amdgpu_secondary_operation() != Operation::Unknown)
+    return false;
   if (inst.flags() & (BRANCH | COND_BRANCH | INDIRECT_BRANCH | INDIRECT_CALL | PROGRAM_TERMINATOR |
                       BARRIER | WRITES_EXEC))
     return false;
@@ -71,23 +80,16 @@ inline bool safe_inline(const Instruction &inst) {
   // wave-wide state stable while an asynchronous MMA may still consult it.
   if (modifiers.dpp)
     return false;
-  const auto name = inst.mnemonic();
-  if (name == "s_delay_alu" || name == "s_nop" || name == "v_nop")
+  if (operation == Operation::S_DELAY_ALU || operation == Operation::S_NOP ||
+      operation == Operation::V_NOP)
     return true;
-  if (candidate(name) || ordinary_memory(name))
+  if (candidate(inst) || ordinary_memory(inst))
     return true;
   if (inst.is_waitcnt())
-    return !name.starts_with("s_wait_alu") && name != "s_wait_idle";
+    return operation != Operation::S_WAIT_ALU && operation != Operation::S_WAIT_IDLE;
   // Explicitly exclude instructions with hidden EXEC, MODE, cache, scheduling,
   // register-allocation or cross-lane register-index side effects.
-  constexpr std::string_view prefixes[] = {
-      "s_mov_",     "s_add_",      "s_addc_",     "s_sub_",     "s_subb_", "s_mul_",    "s_mad_",
-      "s_and_",     "s_or_",       "s_xor_",      "s_lshl_",    "s_lshr_", "s_ashr_",   "s_cmp_",
-      "s_cselect_", "v_mov_",      "v_add_",      "v_addc_",    "v_sub_",  "v_subrev_", "v_mul_",
-      "v_mad_",     "v_fma_",      "v_lshl",      "v_lshr",     "v_ashr",  "v_and_",    "v_or_",
-      "v_xor_",     "v_cvt_",      "v_cmp_",      "v_cndmask_", "v_max_",  "v_min_",    "v_bfe_",
-      "v_bfi_",     "v_alignbit_", "v_alignbyte_"};
-  if (!std::ranges::any_of(prefixes, [&](auto prefix) { return name.starts_with(prefix); }))
+  if (inline_operation_kind(operation) != InlineOperationKind::Arithmetic)
     return false;
   for (int i = 0; i != inst.num_dst_operands(); ++i) {
     const auto *op = inst.dst_operand(i);

@@ -36,6 +36,7 @@
 #include <set>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -174,12 +175,16 @@ static_assert(!amdgpu::IsaExecComputeUnit<simdojo::ExecMode::FUNCTIONAL,
                                           rdna4::Isa>::supports_async_execution);
 
 TEST(MatrixCoexecutionTest, SelectsOnlySupportedLargeMatrixInstructions) {
-  EXPECT_FALSE(mc::async_candidate("v_wmma_f32_16x16x64_fp8_fp8"));
-  EXPECT_FALSE(mc::async_candidate("v_wmma_f32_16x16x128_bf8_bf8"));
-  EXPECT_TRUE(mc::async_candidate("v_wmma_f32_32x16x128_f4"));
-  EXPECT_FALSE(mc::async_candidate("v_wmma_f32_16x16x32_f16"));
-  EXPECT_FALSE(mc::async_candidate("v_wmma_f32_16x16x128_f8f6f4"));
-  EXPECT_FALSE(mc::async_candidate("v_add_f32"));
+  using amdgpu::Operation;
+  for (const auto &[operation, expected] : {
+           std::pair{Operation::V_WMMA_F32_16X16X64_FP8_FP8, false},
+           std::pair{Operation::V_WMMA_F32_16X16X128_BF8_BF8, false},
+           std::pair{Operation::V_WMMA_F32_32X16X128_F4, true},
+           std::pair{Operation::V_WMMA_F32_16X16X32_F16, false},
+           std::pair{Operation::V_WMMA_F32_16X16X128_F8F6F4, false},
+           std::pair{Operation::V_ADD_F32, false},
+       })
+    EXPECT_EQ(mc::async_candidate(mma_test::PolicyInstruction(operation)), expected);
 }
 
 TEST(MatrixCoexecutionTest, BatchOverlapsEightCallbacksAndJoinsBeforeReturning) {
